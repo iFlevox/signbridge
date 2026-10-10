@@ -15,19 +15,19 @@ import {
   Cpu,
   RefreshCw,
   Info,
-  Layers,
   Sparkles,
   HelpCircle,
   ExternalLink,
   Lock,
-  Eye,
   CheckCircle2,
-  AlertTriangle
+  AlertTriangle,
+  Subtitles,
+  Activity,
+  Sliders
 } from 'lucide-react'
 import {
   DACTYL_ALPHABET,
   CORE_SIGNS,
-  TRANSPARENCY_DISCLOSURE,
   TECHNICAL_ARCHITECTURE,
   PRIVACY_POLICY,
   UzbekSignDefinition
@@ -53,6 +53,10 @@ export default function SignBridgePage() {
   const [modelError, setModelError] = useState<string | null>(null)
   const [fps, setFps] = useState(0)
 
+  // Subtitles / Captions UI controls
+  const [showCaptions, setShowCaptions] = useState(true)
+  const [captionSize, setCaptionSize] = useState<'normal' | 'large' | 'huge'>('large')
+
   // Recognition Output
   const [currentResult, setCurrentResult] = useState<ClassificationResult>({
     state: 'no_hand',
@@ -63,6 +67,7 @@ export default function SignBridgePage() {
   })
   const [holdProgress, setHoldProgress] = useState(0)
   const [recognizedText, setRecognizedText] = useState('')
+  const [lastCommittedSign, setLastCommittedSign] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [speechActive, setSpeechActive] = useState(false)
   const [activeTab, setActiveTab] = useState<'app' | 'vocabulary' | 'architecture' | 'privacy'>('app')
@@ -277,6 +282,7 @@ export default function SignBridgePage() {
             setHoldProgress(bufferRes.holdProgress)
             if (bufferRes.committed) {
               setRecognizedText(bufferRes.currentText)
+              setLastCommittedSign(bufferRes.newChar)
             }
           } else {
             // No hand detected
@@ -312,7 +318,7 @@ export default function SignBridgePage() {
 
     window.speechSynthesis.cancel()
     const utterance = new SpeechSynthesisUtterance(recognizedText)
-    utterance.lang = 'uz-UZ' // Fallback to default voice if uz-UZ is not locally installed
+    utterance.lang = 'uz-UZ'
     utterance.rate = 0.95
 
     utterance.onstart = () => setSpeechActive(true)
@@ -342,6 +348,7 @@ export default function SignBridgePage() {
   const handleClear = () => {
     signBufferRef.current.clear()
     setRecognizedText('')
+    setLastCommittedSign(null)
   }
 
   return (
@@ -376,7 +383,7 @@ export default function SignBridgePage() {
                   : 'text-slate-300 hover:bg-slate-800 hover:text-white'
               }`}
             >
-              Kamera & Tarjima
+              Kamera & Subtitr
             </button>
             <button
               onClick={() => setActiveTab('vocabulary')}
@@ -428,10 +435,10 @@ export default function SignBridgePage() {
           </div>
         )}
 
-        {/* Tab 1: Main Camera & Recognition Interface */}
+        {/* Tab 1: Main Camera & Real Subtitle/Caption Interface */}
         {activeTab === 'app' && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-            {/* Left Column: Live Camera & Landmark Overlay */}
+            {/* Left Column: Live Camera with Real-Time Bottom Captions Overlay */}
             <div className="lg:col-span-7 flex flex-col space-y-4">
               <div className="relative aspect-[4/3] w-full rounded-2xl overflow-hidden bg-slate-900 border border-slate-800 shadow-2xl flex items-center justify-center group">
                 <video
@@ -457,7 +464,7 @@ export default function SignBridgePage() {
                     </div>
                     <h3 className="text-lg font-semibold text-white mb-2">Jonli kamera faollashtirilmagan</h3>
                     <p className="text-sm text-slate-400 mb-6">
-                      O‘zbek daktil alifbosi va ishoralarini real vaqt rejimida aniqlash uchun kamerani yoqing. Barcha tasvirlar qurilmangizda 100% lokal qayta ishlanadi.
+                      O‘zbek daktil alifbosi va ishoralarini ko‘rsating — ekranning pastida real vaqtda haqiqiy subtitr (caption) paydo bo‘ladi.
                     </p>
                     <button
                       onClick={startCamera}
@@ -479,54 +486,165 @@ export default function SignBridgePage() {
                   </div>
                 )}
 
-                {/* Live Overlays when active */}
+                {/* Live Top Status Overlays */}
                 {isCameraActive && (
-                  <>
-                    {/* Top status bar inside camera */}
-                    <div className="absolute top-3 left-3 right-3 flex items-center justify-between pointer-events-none z-20">
-                      <div className="flex items-center space-x-2 bg-slate-950/70 backdrop-blur-md px-3 py-1.5 rounded-full border border-slate-700/50 text-xs">
-                        <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-                        <span className="text-slate-200 font-medium">Jonli tahlil</span>
-                        <span className="text-slate-500">|</span>
-                        <span className="text-slate-400 font-mono">{fps} FPS</span>
-                      </div>
-
-                      <div className="bg-slate-950/70 backdrop-blur-md px-3 py-1.5 rounded-full border border-slate-700/50 text-xs text-slate-300 flex items-center space-x-1.5">
-                        <Lock className="w-3 h-3 text-teal-400" />
-                        <span>Lokal ishlov</span>
-                      </div>
+                  <div className="absolute top-3 left-3 right-3 flex items-center justify-between pointer-events-none z-20">
+                    <div className="flex items-center space-x-2 bg-slate-950/80 backdrop-blur-md px-3 py-1.5 rounded-full border border-slate-700/50 text-xs">
+                      <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                      <span className="text-slate-200 font-medium">Jonli tahlil</span>
+                      <span className="text-slate-500">|</span>
+                      <span className="text-slate-400 font-mono">{fps} FPS</span>
                     </div>
 
-                    {/* Bottom Progress Hold indicator */}
+                    <div className="flex items-center space-x-2 pointer-events-auto">
+                      <button
+                        onClick={() => setShowCaptions(!showCaptions)}
+                        className={`px-2.5 py-1 rounded-full text-xs font-medium border flex items-center space-x-1.5 backdrop-blur-md transition-all ${
+                          showCaptions
+                            ? 'bg-teal-500/20 text-teal-300 border-teal-500/40'
+                            : 'bg-slate-950/80 text-slate-400 border-slate-700'
+                        }`}
+                        title="Subtitrlarni yoqish/o‘chirish"
+                      >
+                        <Subtitles className="w-3.5 h-3.5" />
+                        <span>Subtitr {showCaptions ? 'ON' : 'OFF'}</span>
+                      </button>
+
+                      <div className="bg-slate-950/80 backdrop-blur-md px-2.5 py-1 rounded-full border border-slate-700/50 text-xs text-slate-300 flex items-center space-x-1">
+                        <Lock className="w-3 h-3 text-teal-400" />
+                        <span>Lokal</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* REAL-TIME SCREEN BOTTOM CAPTION (HAQIQIY JONLI SUBTITR PANELI) */}
+                {isCameraActive && showCaptions && (
+                  <div className="absolute bottom-4 left-4 right-4 z-30 pointer-events-none flex flex-col items-center">
+                    {/* Live Hold Progress Bar */}
                     {holdProgress > 0 && (
-                      <div className="absolute bottom-3 left-4 right-4 z-20 pointer-events-none">
-                        <div className="flex items-center justify-between text-xs text-teal-300 mb-1 font-medium bg-slate-950/80 px-2.5 py-0.5 rounded backdrop-blur">
-                          <span>Ishora ushlab turilmoqda...</span>
+                      <div className="w-full max-w-lg mb-2">
+                        <div className="flex items-center justify-between text-[11px] font-semibold text-teal-300 px-2 py-0.5 rounded bg-slate-950/90 backdrop-blur border border-teal-500/30 mb-1">
+                          <span className="flex items-center space-x-1.5">
+                            <Activity className="w-3 h-3 animate-pulse text-teal-400" />
+                            <span>Aniqlanmoqda: "{currentResult.gloss}"</span>
+                          </span>
                           <span>{Math.round(holdProgress * 100)}%</span>
                         </div>
-                        <div className="w-full h-1.5 bg-slate-800/80 rounded-full overflow-hidden">
+                        <div className="w-full h-1.5 bg-slate-950/80 rounded-full overflow-hidden border border-slate-800">
                           <div
-                            className="h-full bg-gradient-to-r from-teal-500 to-cyan-400 transition-all duration-75"
+                            className="h-full bg-gradient-to-r from-teal-400 to-cyan-300 transition-all duration-75 shadow-sm"
                             style={{ width: `${holdProgress * 100}%` }}
                           />
                         </div>
                       </div>
                     )}
-                  </>
+
+                    {/* CINEMATIC BROADCAST SUBTITLES / CAPTION BAR */}
+                    <div className="w-full max-w-xl bg-slate-950/90 backdrop-blur-xl border border-slate-700/80 rounded-2xl p-3.5 sm:p-4 shadow-2xl flex flex-col items-center text-center">
+                      {/* Active Live Word / Letter Display */}
+                      <div className="flex items-center justify-center space-x-3 mb-1">
+                        {currentResult.state === 'recognized' ? (
+                          <div className="flex items-center space-x-2">
+                            <span className="px-2.5 py-0.5 rounded-lg bg-teal-500 text-slate-950 font-black text-xs font-mono uppercase tracking-wider">
+                              Jonli
+                            </span>
+                            <span
+                              className={`font-black tracking-wide text-teal-300 drop-shadow-[0_2px_8px_rgba(20,184,166,0.6)] ${
+                                captionSize === 'huge'
+                                  ? 'text-3xl sm:text-4xl'
+                                  : captionSize === 'large'
+                                  ? 'text-2xl sm:text-3xl'
+                                  : 'text-xl sm:text-2xl'
+                              }`}
+                            >
+                              {currentResult.gloss}
+                            </span>
+                            <span className="text-xs text-slate-400 font-medium">
+                              ({Math.round(currentResult.confidence * 100)}%)
+                            </span>
+                          </div>
+                        ) : currentResult.state === 'unknown_gesture' ? (
+                          <div className="flex items-center space-x-2 text-amber-400 text-xs sm:text-sm font-medium">
+                            <span className="h-2 w-2 rounded-full bg-amber-400 animate-ping" />
+                            <span>Noma’lum ishora (lug‘atda yo‘q)</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center space-x-1.5 text-slate-400 text-xs">
+                            <span className="h-1.5 w-1.5 rounded-full bg-slate-500" />
+                            <span>Qo‘lingizni kameraga ko‘rsating...</span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Cumulative Real-Time Sentence Transcript (Pastki doimiy subtitr matni) */}
+                      <div className="w-full pt-2 border-t border-slate-800/80 mt-1">
+                        <p
+                          className={`font-semibold tracking-normal text-white drop-shadow-md break-words ${
+                            captionSize === 'huge'
+                              ? 'text-lg sm:text-xl'
+                              : captionSize === 'large'
+                              ? 'text-base sm:text-lg'
+                              : 'text-sm sm:text-base'
+                          }`}
+                        >
+                          {recognizedText ? (
+                            <>
+                              <span className="text-slate-100">{recognizedText}</span>
+                              <span className="inline-block w-1.5 h-4 ml-1 bg-teal-400 animate-pulse align-middle" />
+                            </>
+                          ) : (
+                            <span className="text-slate-400 italic font-normal text-xs sm:text-sm">
+                              [Subtitr matni shu yerda jonli chiqadi]
+                            </span>
+                          )}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
                 )}
               </div>
 
-              {/* Camera Controls Bar */}
-              <div className="flex items-center justify-between bg-slate-900/60 p-3 rounded-xl border border-slate-800">
+              {/* Camera & Caption Controls Bar */}
+              <div className="flex flex-wrap items-center justify-between bg-slate-900/60 p-3 rounded-xl border border-slate-800 gap-2">
                 <div className="flex items-center space-x-3 text-xs text-slate-400">
                   <div className="flex items-center space-x-1">
                     <span className="h-2 w-2 rounded-full bg-cyan-400" />
-                    <span>21 Landmark skeleti</span>
+                    <span>21 Landmark</span>
                   </div>
                   <div className="flex items-center space-x-1">
                     <span className="h-2 w-2 rounded-full bg-emerald-400" />
                     <span>Barmoq uchlari</span>
                   </div>
+                </div>
+
+                {/* Caption size switch */}
+                <div className="flex items-center space-x-1 text-xs text-slate-300 bg-slate-950/60 p-1 rounded-lg border border-slate-800">
+                  <span className="text-[10px] text-slate-500 px-1 font-semibold uppercase">Shrift:</span>
+                  <button
+                    onClick={() => setCaptionSize('normal')}
+                    className={`px-2 py-0.5 rounded text-[11px] font-medium transition-all ${
+                      captionSize === 'normal' ? 'bg-teal-500 text-slate-950 font-bold' : 'hover:text-white'
+                    }`}
+                  >
+                    Oddiy
+                  </button>
+                  <button
+                    onClick={() => setCaptionSize('large')}
+                    className={`px-2 py-0.5 rounded text-[11px] font-medium transition-all ${
+                      captionSize === 'large' ? 'bg-teal-500 text-slate-950 font-bold' : 'hover:text-white'
+                    }`}
+                  >
+                    Katta
+                  </button>
+                  <button
+                    onClick={() => setCaptionSize('huge')}
+                    className={`px-2 py-0.5 rounded text-[11px] font-medium transition-all ${
+                      captionSize === 'huge' ? 'bg-teal-500 text-slate-950 font-bold' : 'hover:text-white'
+                    }`}
+                  >
+                    Ulkan
+                  </button>
                 </div>
 
                 <div className="flex items-center space-x-2">
@@ -552,7 +670,7 @@ export default function SignBridgePage() {
               </div>
             </div>
 
-            {/* Right Column: Recognition Dashboard & Output Buffer */}
+            {/* Right Column: Recognition Dashboard & Full Text Log */}
             <div className="lg:col-span-5 flex flex-col space-y-4">
               {/* Current Detection State Card */}
               <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 shadow-xl relative overflow-hidden">
@@ -581,7 +699,7 @@ export default function SignBridgePage() {
                 <div className="flex items-center space-x-4 mb-4">
                   <div className="h-16 w-16 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center flex-shrink-0 shadow-inner">
                     {currentResult.state === 'recognized' ? (
-                      <span className="text-2xl font-black text-teal-400 font-mono">
+                      <span className="text-3xl font-black text-teal-400 font-mono">
                         {currentResult.gloss}
                       </span>
                     ) : (
@@ -606,7 +724,7 @@ export default function SignBridgePage() {
                 <div className="pt-3 border-t border-slate-800/80 flex items-start space-x-2 text-[11px] text-slate-400">
                   <Info className="w-3.5 h-3.5 text-teal-400 flex-shrink-0 mt-0.5" />
                   <span>
-                    Zero-fabrication kafolati: Ishora faqatgina tasdiqlangan geometrik va kinematik mezonlarga to‘liq mos kelgandagina matnga kiritiladi.
+                    Zero-fabrication kafolati: Ishora ekranning pastiga haqiqiy kompyuter ko‘rish modeli orqali ishonchli aniqlangandagina subtitr sifatida chiqariladi.
                   </span>
                 </div>
               </div>
@@ -872,8 +990,8 @@ export default function SignBridgePage() {
                   {TECHNICAL_ARCHITECTURE.layerB.description}
                 </p>
                 <ul className="text-xs text-slate-300 space-y-1.5 list-disc list-inside">
-                  <li>Barmoqlarning bukilish va yozilish burchaklari</li>
-                  <li>Kaft o‘lchamiga nisbatan normallashtirilgan masofalar</li>
+                  <li>Barmoqlar egriligi (curl ratio), barmoqlararo masofalar</li>
+                  <li>Kaft miqyosiga moslangan nisbatlar</li>
                   <li>Noma’lum holatda soxta natija berilmaydi</li>
                 </ul>
               </div>
