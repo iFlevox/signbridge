@@ -23,7 +23,7 @@ import {
   AlertTriangle,
   Subtitles,
   Activity,
-  Sliders
+  Zap
 } from 'lucide-react'
 import {
   DACTYL_ALPHABET,
@@ -67,7 +67,6 @@ export default function SignBridgePage() {
   })
   const [holdProgress, setHoldProgress] = useState(0)
   const [recognizedText, setRecognizedText] = useState('')
-  const [lastCommittedSign, setLastCommittedSign] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [speechActive, setSpeechActive] = useState(false)
   const [activeTab, setActiveTab] = useState<'app' | 'vocabulary' | 'architecture' | 'privacy'>('app')
@@ -76,11 +75,26 @@ export default function SignBridgePage() {
   // References
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const handLandmarkerRef = useRef<any>(null)
   const animationFrameRef = useRef<number | null>(null)
-  const signBufferRef = useRef<SignSequenceBuffer>(new SignSequenceBuffer({ stableFramesThreshold: 8, cooldownMs: 1200 }))
-  const lastTimeRef = useRef<number>(performance.now())
+  const signBufferRef = useRef<SignSequenceBuffer>(new SignSequenceBuffer({ stableFramesThreshold: 6, cooldownMs: 1000 }))
+  
+  // Throttle and performance refs
+  const lastDetectTimeRef = useRef<number>(0)
+  const lastStateUpdateRef = useRef<number>(0)
+  const lastFpsTimeRef = useRef<number>(performance.now())
   const frameCountRef = useRef<number>(0)
+  const isDetectingRef = useRef<boolean>(false)
+  const lastResultRef = useRef<ClassificationResult>(currentResult)
+  const lastProgressRef = useRef<number>(0)
+
+  // Direct DOM refs for instant zero-lag caption rendering
+  const captionGlossDomRef = useRef<HTMLSpanElement | null>(null)
+  const captionConfidenceDomRef = useRef<HTMLSpanElement | null>(null)
+  const captionTextDomRef = useRef<HTMLParagraphElement | null>(null)
+  const holdProgressDomRef = useRef<HTMLDivElement | null>(null)
+  const holdProgressTextDomRef = useRef<HTMLSpanElement | null>(null)
 
   // Initialize MediaPipe HandLandmarker
   const initHandLandmarker = useCallback(async () => {
@@ -91,8 +105,6 @@ export default function SignBridgePage() {
       setModelError(null)
 
       const { HandLandmarker, FilesetResolver } = await import('@mediapipe/tasks-vision')
-      
-      // Load wasm locally
       const vision = await FilesetResolver.forVisionTasks('/wasm')
 
       const landmarker = await HandLandmarker.createFromOptions(vision, {
@@ -111,7 +123,7 @@ export default function SignBridgePage() {
       setIsLoadingModel(false)
       return landmarker
     } catch (err: any) {
-      console.warn('GPU delegate failed or WASM loading issue, falling back to CPU:', err)
+      console.warn('GPU delegate failed, using CPU fallback:', err)
       try {
         const { HandLandmarker, FilesetResolver } = await import('@mediapipe/tasks-vision')
         const vision = await FilesetResolver.forVisionTasks('/wasm')
@@ -131,14 +143,14 @@ export default function SignBridgePage() {
         return landmarker
       } catch (fallbackErr: any) {
         console.error('Failed to load MediaPipe model:', fallbackErr)
-        setModelError('MediaPipe kompyuter ko‘rish modelini yuklab bo‘lmadi. Brauzer WebAssembly yoki WebGL ni qo‘llab-quvvatlashini tekshiring.')
+        setModelError('MediaPipe kompyuter ko‘rish modelini yuklab bo‘lmadi.')
         setIsLoadingModel(false)
         return null
       }
     }
   }, [])
 
-  // Start Camera
+  // Start Camera with optimal resolution (480x360 for high FPS on any device)
   const startCamera = async () => {
     try {
       setModelError(null)
@@ -147,8 +159,9 @@ export default function SignBridgePage() {
 
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          width: { ideal: 640 },
-          height: { ideal: 480 },
+          width: { ideal: 480, max: 640 },
+          height: { ideal: 360, max: 480 },
+          frameRate: { ideal: 30, max: 60 },
           facingMode: 'user',
         },
         audio: false,
@@ -163,7 +176,7 @@ export default function SignBridgePage() {
       }
     } catch (err: any) {
       console.error('Camera access error:', err)
-      setModelError('Kameraga ulanishda xatolik yuz berdi. Iltimos, brauzerda kamera ruxsatini bering.')
+      setModelError('Kameraga ulanishda xatolik yuz berdi. Brauzerda kamera ruxsatini bering.')
     }
   }
 
@@ -180,7 +193,6 @@ export default function SignBridgePage() {
       videoRef.current.srcObject = null
     }
 
-    // Clear canvas
     if (canvasRef.current) {
       const ctx = canvasRef.current.getContext('2d')
       if (ctx) ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height)
@@ -193,17 +205,17 @@ export default function SignBridgePage() {
       gloss: null,
       confidence: 0,
       category: null,
-      description: 'Kamera o‘chirilgan. Ishni davom ettirish uchun kamerani yoqing.',
+      description: 'Kamera o‘chirilgan.',
     })
   }
 
-  // Main Detection Loop
+  // High-Performance Smooth Animation Loop (60 FPS rendering, throttled 25 FPS CV)
   useEffect(() => {
     if (!isCameraActive) return
 
     let isRunning = true
 
-    const renderLoop = () => {
+    const renderLoop = (timestamp: number) => {
       if (!isRunning) return
 
       const video = videoRef.current
@@ -211,90 +223,144 @@ export default function SignBridgePage() {
       const landmarker = handLandmarkerRef.current
 
       if (video && video.readyState >= 2 && canvas && landmarker) {
-        // Sync canvas size
+        // Fast canvas dimension check
         if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
           canvas.width = video.videoWidth
           canvas.height = video.videoHeight
         }
 
-        const ctx = canvas.getContext('2d')
+        const ctx = canvas.getContext('2d', { alpha: true })
         if (ctx) {
-          ctx.clearRect(0, 0, canvas.width, canvas.height)
-
-          const startTimeMs = performance.now()
-          const detections = landmarker.detectForVideo(video, startTimeMs)
-
-          // Measure FPS
+          // FPS counter
           frameCountRef.current++
-          if (startTimeMs - lastTimeRef.current >= 1000) {
+          if (timestamp - lastFpsTimeRef.current >= 1000) {
             setFps(frameCountRef.current)
             frameCountRef.current = 0
-            lastTimeRef.current = startTimeMs
+            lastFpsTimeRef.current = timestamp
           }
 
-          if (detections.landmarks && detections.landmarks.length > 0) {
-            const rawLandmarks = detections.landmarks[0]
-            const landmarks3D: Landmark3D[] = rawLandmarks.map((pt: any) => ({
-              x: pt.x,
-              y: pt.y,
-              z: pt.z || 0,
-            }))
+          // Throttle CV inference to every 33ms (~30 FPS) to prevent CPU thread starvation
+          const timeSinceLastDetect = timestamp - lastDetectTimeRef.current
+          if (timeSinceLastDetect >= 33 && !isDetectingRef.current) {
+            isDetectingRef.current = true
+            lastDetectTimeRef.current = timestamp
 
-            // Draw Skeleton
-            ctx.save()
-            ctx.strokeStyle = '#06b6d4' // Teal-cyan
-            ctx.lineWidth = 3
+            try {
+              const detections = landmarker.detectForVideo(video, timestamp)
+              ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-            for (const [start, end] of HAND_CONNECTIONS) {
-              const p1 = landmarks3D[start]
-              const p2 = landmarks3D[end]
-              ctx.beginPath()
-              ctx.moveTo(p1.x * canvas.width, p1.y * canvas.height)
-              ctx.lineTo(p2.x * canvas.width, p2.y * canvas.height)
-              ctx.stroke()
+              if (detections.landmarks && detections.landmarks.length > 0) {
+                const rawLandmarks = detections.landmarks[0]
+                const landmarks3D: Landmark3D[] = rawLandmarks.map((pt: any) => ({
+                  x: pt.x,
+                  y: pt.y,
+                  z: pt.z || 0,
+                }))
+
+                // Render Optimized Skeleton
+                ctx.save()
+                ctx.strokeStyle = '#06b6d4'
+                ctx.lineWidth = 2.5
+                ctx.beginPath()
+                for (const [start, end] of HAND_CONNECTIONS) {
+                  const p1 = landmarks3D[start]
+                  const p2 = landmarks3D[end]
+                  ctx.moveTo(p1.x * canvas.width, p1.y * canvas.height)
+                  ctx.lineTo(p2.x * canvas.width, p2.y * canvas.height)
+                }
+                ctx.stroke()
+
+                // Render Landmark Points in single batch
+                for (let i = 0; i < landmarks3D.length; i++) {
+                  const pt = landmarks3D[i]
+                  const isTip = i === 4 || i === 8 || i === 12 || i === 16 || i === 20
+                  ctx.beginPath()
+                  ctx.arc(pt.x * canvas.width, pt.y * canvas.height, isTip ? 5 : 3.5, 0, 2 * Math.PI)
+                  ctx.fillStyle = isTip ? '#10b981' : '#38bdf8'
+                  ctx.fill()
+                }
+                ctx.restore()
+
+                // Layer B: Classify
+                const classification = classifyHandLandmarks(landmarks3D)
+                lastResultRef.current = classification
+
+                // Layer C: Debounce & Buffer
+                const bufferRes = signBufferRef.current.processFrame(
+                  classification.state,
+                  classification.gloss,
+                  classification.category,
+                  timestamp
+                )
+
+                lastProgressRef.current = bufferRes.holdProgress
+
+                // Zero-lag direct DOM updates for bottom caption
+                if (captionGlossDomRef.current) {
+                  if (classification.state === 'recognized') {
+                    captionGlossDomRef.current.innerText = classification.gloss || ''
+                    if (captionConfidenceDomRef.current) {
+                      captionConfidenceDomRef.current.innerText = `(${Math.round(classification.confidence * 100)}%)`
+                    }
+                  } else if (classification.state === 'unknown_gesture') {
+                    captionGlossDomRef.current.innerText = 'Noma’lum ishora'
+                    if (captionConfidenceDomRef.current) {
+                      captionConfidenceDomRef.current.innerText = ''
+                    }
+                  }
+                }
+
+                if (holdProgressDomRef.current) {
+                  holdProgressDomRef.current.style.width = `${Math.round(bufferRes.holdProgress * 100)}%`
+                }
+                if (holdProgressTextDomRef.current) {
+                  holdProgressTextDomRef.current.innerText = `${Math.round(bufferRes.holdProgress * 100)}%`
+                }
+
+                // If a new character is committed, update React state immediately
+                if (bufferRes.committed) {
+                  setRecognizedText(bufferRes.currentText)
+                  if (captionTextDomRef.current) {
+                    captionTextDomRef.current.innerText = bufferRes.currentText
+                  }
+                }
+              } else {
+                ctx.clearRect(0, 0, canvas.width, canvas.height)
+                lastResultRef.current = {
+                  state: 'no_hand',
+                  gloss: null,
+                  confidence: 0,
+                  category: null,
+                  description: 'Qo‘l ko‘rinmayapti. Kameraga qo‘lingizni ko‘rsating.',
+                }
+                signBufferRef.current.processFrame('no_hand', null)
+                lastProgressRef.current = 0
+
+                if (captionGlossDomRef.current) {
+                  captionGlossDomRef.current.innerText = 'Qo‘lingizni ko‘rsating...'
+                }
+                if (captionConfidenceDomRef.current) {
+                  captionConfidenceDomRef.current.innerText = ''
+                }
+                if (holdProgressDomRef.current) {
+                  holdProgressDomRef.current.style.width = '0%'
+                }
+                if (holdProgressTextDomRef.current) {
+                  holdProgressTextDomRef.current.innerText = '0%'
+                }
+              }
+            } catch (err) {
+              console.error('Frame detection error:', err)
+            } finally {
+              isDetectingRef.current = false
             }
 
-            // Draw Landmark Points
-            for (let i = 0; i < landmarks3D.length; i++) {
-              const pt = landmarks3D[i]
-              ctx.beginPath()
-              ctx.arc(pt.x * canvas.width, pt.y * canvas.height, i % 4 === 0 ? 6 : 4, 0, 2 * Math.PI)
-              ctx.fillStyle = i === 4 || i === 8 || i === 12 || i === 16 || i === 20 ? '#10b981' : '#38bdf8'
-              ctx.fill()
-              ctx.strokeStyle = '#ffffff'
-              ctx.lineWidth = 1.5
-              ctx.stroke()
+            // Sync with React State at smooth 10 Hz (every 100ms) to eliminate React re-render lag
+            if (timestamp - lastStateUpdateRef.current >= 100) {
+              setCurrentResult(lastResultRef.current)
+              setHoldProgress(lastProgressRef.current)
+              lastStateUpdateRef.current = timestamp
             }
-            ctx.restore()
-
-            // Run Layer B: Sign Classification
-            const classification = classifyHandLandmarks(landmarks3D)
-            setCurrentResult(classification)
-
-            // Run Layer C: Buffer & Debouncing
-            const bufferRes = signBufferRef.current.processFrame(
-              classification.state,
-              classification.gloss,
-              classification.category,
-              startTimeMs
-            )
-
-            setHoldProgress(bufferRes.holdProgress)
-            if (bufferRes.committed) {
-              setRecognizedText(bufferRes.currentText)
-              setLastCommittedSign(bufferRes.newChar)
-            }
-          } else {
-            // No hand detected
-            setCurrentResult({
-              state: 'no_hand',
-              gloss: null,
-              confidence: 0,
-              category: null,
-              description: 'Qo‘l ko‘rinmayapti. Kameraga qo‘lingizni ko‘rsating.',
-            })
-            signBufferRef.current.processFrame('no_hand', null)
-            setHoldProgress(0)
           }
         }
       }
@@ -302,7 +368,7 @@ export default function SignBridgePage() {
       animationFrameRef.current = requestAnimationFrame(renderLoop)
     }
 
-    renderLoop()
+    animationFrameRef.current = requestAnimationFrame(renderLoop)
 
     return () => {
       isRunning = false
@@ -312,7 +378,7 @@ export default function SignBridgePage() {
     }
   }, [isCameraActive])
 
-  // Speech synthesis in Uzbek / international fallback
+  // Speech synthesis in Uzbek
   const speakText = () => {
     if (!recognizedText.trim() || typeof window === 'undefined' || !window.speechSynthesis) return
 
@@ -338,17 +404,19 @@ export default function SignBridgePage() {
   const handleAddSpace = () => {
     const updated = signBufferRef.current.addSpace()
     setRecognizedText(updated)
+    if (captionTextDomRef.current) captionTextDomRef.current.innerText = updated
   }
 
   const handleBackspace = () => {
     const updated = signBufferRef.current.backspace()
     setRecognizedText(updated)
+    if (captionTextDomRef.current) captionTextDomRef.current.innerText = updated
   }
 
   const handleClear = () => {
     signBufferRef.current.clear()
     setRecognizedText('')
-    setLastCommittedSign(null)
+    if (captionTextDomRef.current) captionTextDomRef.current.innerText = ''
   }
 
   return (
@@ -364,11 +432,11 @@ export default function SignBridgePage() {
               <div className="flex items-center space-x-2">
                 <h1 className="text-lg font-bold tracking-tight text-white">iFlevox SignBridge</h1>
                 <span className="text-[10px] uppercase tracking-wider font-semibold px-2 py-0.5 rounded-full bg-teal-500/10 text-teal-400 border border-teal-500/20">
-                  UzSL v1.0
+                  Ultra-Fast UzSL
                 </span>
               </div>
               <p className="text-xs text-slate-400 hidden sm:block">
-                O‘zbek imo-ishora tilini kompyuter ko‘rish orqali matnga aylantirish tizimi
+                O‘zbek imo-ishora tilini kompyuter ko‘rish orqali tezkor matnga aylantirish
               </p>
             </div>
           </div>
@@ -435,7 +503,7 @@ export default function SignBridgePage() {
           </div>
         )}
 
-        {/* Tab 1: Main Camera & Real Subtitle/Caption Interface */}
+        {/* Tab 1: Main Camera & Zero-Lag Real Subtitle/Caption Interface */}
         {activeTab === 'app' && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
             {/* Left Column: Live Camera with Real-Time Bottom Captions Overlay */}
@@ -445,13 +513,13 @@ export default function SignBridgePage() {
                   ref={videoRef}
                   playsInline
                   muted
-                  className={`absolute inset-0 w-full h-full object-cover transform -scale-x-100 transition-opacity duration-300 ${
+                  className={`absolute inset-0 w-full h-full object-cover transform -scale-x-100 transition-opacity duration-200 ${
                     isCameraActive ? 'opacity-90' : 'opacity-0'
                   }`}
                 />
                 <canvas
                   ref={canvasRef}
-                  className={`absolute inset-0 w-full h-full object-cover transform -scale-x-100 pointer-events-none transition-opacity duration-300 ${
+                  className={`absolute inset-0 w-full h-full object-cover transform -scale-x-100 pointer-events-none transition-opacity duration-200 ${
                     isCameraActive ? 'opacity-100' : 'opacity-0'
                   }`}
                 />
@@ -464,7 +532,7 @@ export default function SignBridgePage() {
                     </div>
                     <h3 className="text-lg font-semibold text-white mb-2">Jonli kamera faollashtirilmagan</h3>
                     <p className="text-sm text-slate-400 mb-6">
-                      O‘zbek daktil alifbosi va ishoralarini ko‘rsating — ekranning pastida real vaqtda haqiqiy subtitr (caption) paydo bo‘ladi.
+                      Qotishlarsiz, yuqori tezlikdagi kompyuter ko‘rish rejimida ishlash uchun kamerani yoqing.
                     </p>
                     <button
                       onClick={startCamera}
@@ -491,9 +559,9 @@ export default function SignBridgePage() {
                   <div className="absolute top-3 left-3 right-3 flex items-center justify-between pointer-events-none z-20">
                     <div className="flex items-center space-x-2 bg-slate-950/80 backdrop-blur-md px-3 py-1.5 rounded-full border border-slate-700/50 text-xs">
                       <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-                      <span className="text-slate-200 font-medium">Jonli tahlil</span>
+                      <span className="text-slate-200 font-medium">Tezkor tahlil</span>
                       <span className="text-slate-500">|</span>
-                      <span className="text-slate-400 font-mono">{fps} FPS</span>
+                      <span className="text-teal-400 font-mono font-bold">{fps} FPS</span>
                     </div>
 
                     <div className="flex items-center space-x-2 pointer-events-auto">
@@ -511,75 +579,62 @@ export default function SignBridgePage() {
                       </button>
 
                       <div className="bg-slate-950/80 backdrop-blur-md px-2.5 py-1 rounded-full border border-slate-700/50 text-xs text-slate-300 flex items-center space-x-1">
-                        <Lock className="w-3 h-3 text-teal-400" />
-                        <span>Lokal</span>
+                        <Zap className="w-3 h-3 text-teal-400" />
+                        <span>Qotmaslik rejimi</span>
                       </div>
                     </div>
                   </div>
                 )}
 
-                {/* REAL-TIME SCREEN BOTTOM CAPTION (HAQIQIY JONLI SUBTITR PANELI) */}
+                {/* REAL-TIME SCREEN BOTTOM CAPTION (ZERO-LAG JONLI SUBTITR) */}
                 {isCameraActive && showCaptions && (
                   <div className="absolute bottom-4 left-4 right-4 z-30 pointer-events-none flex flex-col items-center">
-                    {/* Live Hold Progress Bar */}
-                    {holdProgress > 0 && (
-                      <div className="w-full max-w-lg mb-2">
-                        <div className="flex items-center justify-between text-[11px] font-semibold text-teal-300 px-2 py-0.5 rounded bg-slate-950/90 backdrop-blur border border-teal-500/30 mb-1">
-                          <span className="flex items-center space-x-1.5">
-                            <Activity className="w-3 h-3 animate-pulse text-teal-400" />
-                            <span>Aniqlanmoqda: "{currentResult.gloss}"</span>
-                          </span>
-                          <span>{Math.round(holdProgress * 100)}%</span>
-                        </div>
-                        <div className="w-full h-1.5 bg-slate-950/80 rounded-full overflow-hidden border border-slate-800">
-                          <div
-                            className="h-full bg-gradient-to-r from-teal-400 to-cyan-300 transition-all duration-75 shadow-sm"
-                            style={{ width: `${holdProgress * 100}%` }}
-                          />
-                        </div>
+                    {/* Live Hold Progress Bar with direct DOM refs */}
+                    <div className="w-full max-w-lg mb-2">
+                      <div className="flex items-center justify-between text-[11px] font-semibold text-teal-300 px-2.5 py-0.5 rounded bg-slate-950/90 backdrop-blur border border-teal-500/30 mb-1">
+                        <span className="flex items-center space-x-1.5">
+                          <Activity className="w-3 h-3 text-teal-400" />
+                          <span>Ishora turg‘unligi:</span>
+                        </span>
+                        <span ref={holdProgressTextDomRef}>0%</span>
                       </div>
-                    )}
+                      <div className="w-full h-1.5 bg-slate-950/80 rounded-full overflow-hidden border border-slate-800">
+                        <div
+                          ref={holdProgressDomRef}
+                          className="h-full bg-gradient-to-r from-teal-400 to-cyan-300 transition-all duration-75 shadow-sm"
+                          style={{ width: '0%' }}
+                        />
+                      </div>
+                    </div>
 
                     {/* CINEMATIC BROADCAST SUBTITLES / CAPTION BAR */}
                     <div className="w-full max-w-xl bg-slate-950/90 backdrop-blur-xl border border-slate-700/80 rounded-2xl p-3.5 sm:p-4 shadow-2xl flex flex-col items-center text-center">
                       {/* Active Live Word / Letter Display */}
                       <div className="flex items-center justify-center space-x-3 mb-1">
-                        {currentResult.state === 'recognized' ? (
-                          <div className="flex items-center space-x-2">
-                            <span className="px-2.5 py-0.5 rounded-lg bg-teal-500 text-slate-950 font-black text-xs font-mono uppercase tracking-wider">
-                              Jonli
-                            </span>
-                            <span
-                              className={`font-black tracking-wide text-teal-300 drop-shadow-[0_2px_8px_rgba(20,184,166,0.6)] ${
-                                captionSize === 'huge'
-                                  ? 'text-3xl sm:text-4xl'
-                                  : captionSize === 'large'
-                                  ? 'text-2xl sm:text-3xl'
-                                  : 'text-xl sm:text-2xl'
-                              }`}
-                            >
-                              {currentResult.gloss}
-                            </span>
-                            <span className="text-xs text-slate-400 font-medium">
-                              ({Math.round(currentResult.confidence * 100)}%)
-                            </span>
-                          </div>
-                        ) : currentResult.state === 'unknown_gesture' ? (
-                          <div className="flex items-center space-x-2 text-amber-400 text-xs sm:text-sm font-medium">
-                            <span className="h-2 w-2 rounded-full bg-amber-400 animate-ping" />
-                            <span>Noma’lum ishora (lug‘atda yo‘q)</span>
-                          </div>
-                        ) : (
-                          <div className="flex items-center space-x-1.5 text-slate-400 text-xs">
-                            <span className="h-1.5 w-1.5 rounded-full bg-slate-500" />
-                            <span>Qo‘lingizni kameraga ko‘rsating...</span>
-                          </div>
-                        )}
+                        <span className="px-2 py-0.5 rounded bg-teal-500 text-slate-950 font-black text-[11px] font-mono uppercase tracking-wider">
+                          Jonli
+                        </span>
+                        <span
+                          ref={captionGlossDomRef}
+                          className={`font-black tracking-wide text-teal-300 drop-shadow-[0_2px_8px_rgba(20,184,166,0.6)] ${
+                            captionSize === 'huge'
+                              ? 'text-3xl sm:text-4xl'
+                              : captionSize === 'large'
+                              ? 'text-2xl sm:text-3xl'
+                              : 'text-xl sm:text-2xl'
+                          }`}
+                        >
+                          {currentResult.gloss || 'Qo‘lingizni ko‘rsating...'}
+                        </span>
+                        <span ref={captionConfidenceDomRef} className="text-xs text-slate-400 font-medium">
+                          {currentResult.confidence > 0 ? `(${Math.round(currentResult.confidence * 100)}%)` : ''}
+                        </span>
                       </div>
 
-                      {/* Cumulative Real-Time Sentence Transcript (Pastki doimiy subtitr matni) */}
+                      {/* Cumulative Real-Time Sentence Transcript */}
                       <div className="w-full pt-2 border-t border-slate-800/80 mt-1">
                         <p
+                          ref={captionTextDomRef}
                           className={`font-semibold tracking-normal text-white drop-shadow-md break-words ${
                             captionSize === 'huge'
                               ? 'text-lg sm:text-xl'
@@ -588,16 +643,7 @@ export default function SignBridgePage() {
                               : 'text-sm sm:text-base'
                           }`}
                         >
-                          {recognizedText ? (
-                            <>
-                              <span className="text-slate-100">{recognizedText}</span>
-                              <span className="inline-block w-1.5 h-4 ml-1 bg-teal-400 animate-pulse align-middle" />
-                            </>
-                          ) : (
-                            <span className="text-slate-400 italic font-normal text-xs sm:text-sm">
-                              [Subtitr matni shu yerda jonli chiqadi]
-                            </span>
-                          )}
+                          {recognizedText || '[Subtitr matni shu yerda chiqadi]'}
                         </p>
                       </div>
                     </div>
@@ -610,7 +656,7 @@ export default function SignBridgePage() {
                 <div className="flex items-center space-x-3 text-xs text-slate-400">
                   <div className="flex items-center space-x-1">
                     <span className="h-2 w-2 rounded-full bg-cyan-400" />
-                    <span>21 Landmark</span>
+                    <span>21 Nuqta</span>
                   </div>
                   <div className="flex items-center space-x-1">
                     <span className="h-2 w-2 rounded-full bg-emerald-400" />
