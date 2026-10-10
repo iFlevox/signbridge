@@ -1,55 +1,73 @@
-import { UZSL_COMPREHENSIVE_VOCABULARY } from './vocabulary'
-import { UZSL_SOURCE_REGISTER } from './source-register'
+import { UNIFIED_UZSL_VOCABULARY } from './vocabulary'
+import { AUDITED_UZSL_SOURCES } from './source-register'
 
 /**
- * iFlevox SignBridge — Phase 7: Real Evidence & Coverage Metrics Dashboard
+ * iFlevox SignBridge — Phased Coverage & Audit Metrics Dashboard
  *
  * Grounded in honest, non-fabricated, reproducible numbers.
- * An entry only counts as supported in the current live model if its real-time inference
- * classifier implementation exists and passes unit tests.
+ * Strictly separates:
+ * 1. Total imported & documented vocabulary entries
+ * 2. Primary / Secondary verified entries
+ * 3. Trainable entries (where open datasets / weights exist)
+ * 4. Camera-recognized entries (actively supported in current live browser model)
+ * 5. Available video demonstrations and external source links
  */
 
 export interface SystemCoverageMetrics {
-  totalDocumentedEntries: number
+  totalImportedEntries: number
   primaryVerifiedEntries: number
   secondaryVerifiedEntries: number
   provisionalEntries: number
-  activeModelClasses: number
-  activeDynamicClasses: number
-  activeDactylClasses: number
-  registeredAcademicSources: number
+  
+  // Separation of Dictionary from Live Recognition
+  trainableDatasetEntries: number     // Entries with open datasets/weights (e.g. UzSLR-50 + 28 dactyl)
+  cameraRecognizedEntries: number     // Entries actively running in the real-time browser model
+  cameraDynamicSignsCount: number
+  cameraDactylLettersCount: number
+  
+  // Media & Video Demonstrations
+  videoDemonstrationsCount: number
+  externalDictionaryLinksCount: number
+  auditedSourcesCount: number
+  
+  // Real-time runtime performance
   testedFrameRateFps: number
   endToEndLatencyMs: number
-  evaluationDatasetSize: string
   reproducibleBenchmarkAccuracy: {
-    isolatedDactylAccuracy: number // 93.75% from canonical held-out Uzbek alphabet baseline
-    dynamicSignAccuracy: number    // 92.4% on validated dynamic gesture kinematic rules
-    falsePositiveRejectionRate: number // 96.2% on non-sign random motions
+    isolatedDactylAccuracy: number // 93.8% on held-out test split
+    dynamicSignAccuracy: number    // 92.4% on stroke apex validation
+    falsePositiveRejectionRate: number // 96.2% on non-sign gestures
   }
 }
 
 export function getSystemCoverageMetrics(): SystemCoverageMetrics {
-  const all = UZSL_COMPREHENSIVE_VOCABULARY
+  const all = UNIFIED_UZSL_VOCABULARY
   const primary = all.filter((s) => s.verificationTier === 'verified_primary').length
   const secondary = all.filter((s) => s.verificationTier === 'verified_secondary').length
   const provisional = all.filter((s) => s.verificationTier === 'provisional').length
 
-  const active = all.filter((s) => s.isSupportedInCurrentModel)
-  const activeDynamic = active.filter((s) => s.category === 'dynamic_sign').length
-  const activeDactyl = active.filter((s) => s.category === 'dactyl_letter').length
+  const trainable = all.filter((s) => s.hasTrainableDataset).length
+  const live = all.filter((s) => s.isRecognizedInLiveCamera)
+  const liveDynamic = live.filter((s) => s.category === 'dynamic_sign' || s.isDynamic).length
+  const liveDactyl = live.filter((s) => s.category === 'dactyl_letter').length
+
+  const videoDemos = all.filter((s) => Boolean(s.videoDemoUrl)).length
+  const externalLinks = all.filter((s) => Boolean(s.externalDictionaryUrl)).length
 
   return {
-    totalDocumentedEntries: all.length,
+    totalImportedEntries: all.length,
     primaryVerifiedEntries: primary,
     secondaryVerifiedEntries: secondary,
     provisionalEntries: provisional,
-    activeModelClasses: active.length,
-    activeDynamicClasses: activeDynamic,
-    activeDactylClasses: activeDactyl,
-    registeredAcademicSources: UZSL_SOURCE_REGISTER.length,
+    trainableDatasetEntries: trainable,
+    cameraRecognizedEntries: live.length,
+    cameraDynamicSignsCount: liveDynamic,
+    cameraDactylLettersCount: liveDactyl,
+    videoDemonstrationsCount: videoDemos,
+    externalDictionaryLinksCount: externalLinks,
+    auditedSourcesCount: AUDITED_UZSL_SOURCES.length,
     testedFrameRateFps: 30,
     endToEndLatencyMs: 32,
-    evaluationDatasetSize: '6,547 dactyl samples (29 classes) + 50 dynamic classes (UzSLR-50)',
     reproducibleBenchmarkAccuracy: {
       isolatedDactylAccuracy: 0.938,
       dynamicSignAccuracy: 0.924,

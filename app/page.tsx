@@ -895,7 +895,7 @@ export default function SignBridgePage() {
                   </button>
                 </div>
                 <div className="flex flex-wrap gap-1.5">
-                  {UZSL_COMPREHENSIVE_VOCABULARY.filter((s) => s.isSupportedInCurrentModel).map((item) => (
+                  {UZSL_COMPREHENSIVE_VOCABULARY.filter((s) => s.isRecognizedInLiveCamera).map((item) => (
                     <span
                       key={item.gloss}
                       className="px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300 font-mono font-medium hover:border-teal-500 transition-colors cursor-pointer"
@@ -918,7 +918,7 @@ export default function SignBridgePage() {
         {activeTab === 'grammar' && <GrammarView />}
 
         {/* Tab 4: Dashboard & Metrics */}
-        {activeTab === 'dashboard' && <DashboardView metrics={metrics} fps={fps} />}
+        {activeTab === 'dashboard' && <DashboardView />}
 
         {/* Tab 5: Dataset Studio */}
         {activeTab === 'dataset' && (
