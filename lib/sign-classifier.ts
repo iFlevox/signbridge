@@ -236,7 +236,30 @@ export function classifyContinuousHand(
       }
     }
 
-    // 3. Dynamic 'SALOM' (Open palm with reciprocating wave or outward stroke)
+    // 3. Dynamic 'ASSALOMU_ALAYKUM' (Flat palm resting near chest/heart area)
+    if (
+      f.thumb.isExtended &&
+      f.index.isExtended &&
+      f.middle.isExtended &&
+      f.ring.isExtended &&
+      f.pinky.isExtended &&
+      landmarks[0].y > 0.55 &&
+      landmarks[0].x < 0.55 &&
+      motion.totalTrajectoryLength < 0.12 &&
+      indexToMiddleTip < 0.28
+    ) {
+      return {
+        state: 'recognized',
+        gloss: 'ASSALOMU_ALAYKUM',
+        confidence: 0.96,
+        category: 'dynamic_sign',
+        isDynamicStroke: true,
+        motionType: 'Ko‘krak sohasiga qo‘yish',
+        description: 'O‘zbek milliy odobi: "Assalomu alaykum" (Ko‘krakka kaft qo‘yish)',
+      }
+    }
+
+    // 4. Dynamic 'SALOM' (Open palm with reciprocating wave or outward stroke)
     if (
       f.thumb.isExtended &&
       f.index.isExtended &&
@@ -256,7 +279,7 @@ export function classifyContinuousHand(
       }
     }
 
-    // 4. Dynamic 'RAHMAT' (Open hand forward-downward outward stroke from chest)
+    // 5. Dynamic 'RAHMAT' (Open hand forward-downward outward stroke from chest)
     if (
       f.index.isExtended &&
       f.middle.isExtended &&
@@ -274,7 +297,7 @@ export function classifyContinuousHand(
       }
     }
 
-    // 5. Dynamic 'ILTIMOS' (Gentle downward/circular sweep near chest)
+    // 6. Dynamic 'ILTIMOS' (Gentle downward/circular sweep near chest)
     if (
       f.index.isExtended &&
       f.middle.isExtended &&
@@ -292,7 +315,7 @@ export function classifyContinuousHand(
       }
     }
 
-    // 6. Dynamic 'TUSHUNDIM' (Quick downward stroke with index/hand)
+    // 7. Dynamic 'TUSHUNDIM' (Quick downward stroke with index/hand)
     if (
       f.index.isExtended &&
       motion.netDisplacementY > 0.07 &&

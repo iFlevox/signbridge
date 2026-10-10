@@ -12,7 +12,6 @@ import {
   Delete,
   ShieldCheck,
   BookOpen,
-  Cpu,
   RefreshCw,
   Info,
   Sparkles,
@@ -22,22 +21,25 @@ import {
   CheckCircle2,
   AlertTriangle,
   Subtitles,
-  Activity,
-  Zap,
   Flame,
-  Download,
-  Database,
-  Radio,
-  Sliders
+  Languages
 } from 'lucide-react'
 import {
+  UZSL_COMPREHENSIVE_VOCABULARY,
   DACTYL_ALPHABET,
   DYNAMIC_SIGNS,
   TECHNICAL_ARCHITECTURE,
   PRIVACY_POLICY,
-  CONTINUOUS_RECOGNITION_ARCHITECTURE,
-  UzbekSignDefinition
+  UzSLSignEntry
 } from '../lib/vocabulary'
+import { HeaderNav, TabKey } from '../components/HeaderNav'
+import { DashboardView } from '../components/DashboardView'
+import { VocabularyView } from '../components/VocabularyView'
+import { DatasetStudioView } from '../components/DatasetStudioView'
+import { SourcesView } from '../components/SourcesView'
+import { GrammarView } from '../components/GrammarView'
+import { translateUzSLSequence, TranslationResult } from '../lib/grammar-translator'
+import { getSystemCoverageMetrics, SystemCoverageMetrics } from '../lib/coverage-metrics'
 import {
   classifyContinuousHand,
   extractMotionFeatures,
@@ -64,6 +66,8 @@ const HAND_CONNECTIONS = [
 ]
 
 export default function SignBridgePage() {
+  const [activeTab, setActiveTab] = useState<TabKey>('app')
+
   // Camera & MediaPipe State
   const [isCameraActive, setIsCameraActive] = useState(false)
   const [isLoadingModel, setIsLoadingModel] = useState(false)
@@ -74,20 +78,27 @@ export default function SignBridgePage() {
   const [showCaptions, setShowCaptions] = useState(true)
   const [captionSize, setCaptionSize] = useState<'normal' | 'large' | 'huge'>('large')
 
-  // Recognition Output
+  // Recognition & Translation Output
   const [currentResult, setCurrentResult] = useState<ClassificationResult>({
     state: 'no_hand',
     gloss: null,
     confidence: 0,
     category: null,
-    description: 'Kamera yoqilmagan. Uzluksiz muloqotni boshlash uchun "Kamerani yoqish" tugmasini bosing.',
+    description: 'Kamera yoqilmagan. Boshlash uchun "Kamerani yoqish" tugmasini bosing.',
   })
   const [holdProgress, setHoldProgress] = useState(0)
+  const [recognizedTokens, setRecognizedTokens] = useState<string[]>([])
   const [recognizedText, setRecognizedText] = useState('')
+  const [translationResult, setTranslationResult] = useState<TranslationResult>({
+    rawGlosses: [],
+    glossSequence: '',
+    fluentUzbek: '',
+    confidence: 1.0,
+    isDirectMapping: true,
+    uncertainTokens: [],
+  })
   const [copied, setCopied] = useState(false)
   const [speechActive, setSpeechActive] = useState(false)
-  const [activeTab, setActiveTab] = useState<'app' | 'dataset' | 'vocabulary' | 'architecture' | 'privacy'>('app')
-  const [selectedVocab, setSelectedVocab] = useState<UzbekSignDefinition | null>(null)
 
   // Dataset Studio / Informed Consent State
   const [datasetConsent, setDatasetConsent] = useState(false)
@@ -95,15 +106,18 @@ export default function SignBridgePage() {
   const [isRecording, setIsRecording] = useState(false)
   const [recordedSamples, setRecordedSamples] = useState<RecordedSequenceSample[]>([])
 
+  // Coverage Metrics
+  const [metrics, setMetrics] = useState<SystemCoverageMetrics>(getSystemCoverageMetrics())
+
   // References
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const handLandmarkerRef = useRef<any>(null)
   const animationFrameRef = useRef<number | null>(null)
-  
+
   // Continuous recognition instances
   const decoderRef = useRef<ContinuousSignDecoder>(new ContinuousSignDecoder({
-    staticDebounceFrames: 3,        // ~90ms, user does not need to pause!
+    staticDebounceFrames: 3,
     dynamicApexCooldownMs: 650,
     duplicateSignCooldownMs: 900,
     autoSpaceTimeoutMs: 1800,
@@ -111,7 +125,7 @@ export default function SignBridgePage() {
   const collectorRef = useRef<LocalDatasetCollector>(new LocalDatasetCollector())
   const temporalFramesRef = useRef<TemporalFrame[]>([])
 
-  // Throttle and performance refs
+  // Performance throttling refs
   const lastDetectTimeRef = useRef<number>(0)
   const lastStateUpdateRef = useRef<number>(0)
   const lastFpsTimeRef = useRef<number>(performance.now())
@@ -131,6 +145,7 @@ export default function SignBridgePage() {
   // Load saved local dataset samples on mount
   useEffect(() => {
     setRecordedSamples(collectorRef.current.getSavedSamples())
+    setMetrics(getSystemCoverageMetrics())
   }, [])
 
   // Initialize MediaPipe HandLandmarker
@@ -160,7 +175,7 @@ export default function SignBridgePage() {
       setIsLoadingModel(false)
       return landmarker
     } catch (err: any) {
-      console.warn('GPU delegate failed, falling back to CPU:', err)
+      console.warn('GPU delegate fallback to CPU:', err)
       try {
         const { HandLandmarker, FilesetResolver } = await import('@mediapipe/tasks-vision')
         const vision = await FilesetResolver.forVisionTasks('/wasm')
@@ -187,7 +202,7 @@ export default function SignBridgePage() {
     }
   }, [])
 
-  // Start Camera with optimal resolution (480x360 for high FPS on any device)
+  // Start Camera with optimal resolution (480x360)
   const startCamera = async () => {
     try {
       setModelError(null)
@@ -247,7 +262,7 @@ export default function SignBridgePage() {
     })
   }
 
-  // High-Performance Smooth Animation Loop (Continuous Adaptive Temporal Recognition)
+  // Continuous Camera Loop (60 FPS rendering, throttled 30 FPS inference)
   useEffect(() => {
     if (!isCameraActive) return
 
@@ -275,7 +290,6 @@ export default function SignBridgePage() {
             lastFpsTimeRef.current = timestamp
           }
 
-          // Throttle CV inference to every 33ms (~30 FPS)
           const timeSinceLastDetect = timestamp - lastDetectTimeRef.current
           if (timeSinceLastDetect >= 33 && !isDetectingRef.current) {
             isDetectingRef.current = true
@@ -293,7 +307,7 @@ export default function SignBridgePage() {
                   z: pt.z || 0,
                 }))
 
-                // Update continuous temporal sliding window (last 16 frames ~ 500ms)
+                // Update continuous sliding window
                 const palmScale = distance3D(landmarks3D[0], landmarks3D[9]) || 0.1
                 temporalFramesRef.current.push({
                   landmarks: landmarks3D,
@@ -306,18 +320,16 @@ export default function SignBridgePage() {
                   temporalFramesRef.current.shift()
                 }
 
-                // If dataset recorder is active, record frame coordinates
                 if (collectorRef.current.isCurrentlyRecording()) {
                   collectorRef.current.captureFrame(landmarks3D)
                 }
 
-                // Extract Dynamic Kinematic Features
                 const motionFeatures = extractMotionFeatures(temporalFramesRef.current)
 
-                // Render Optimized Skeleton
+                // Skeleton Drawing
                 ctx.save()
                 ctx.strokeStyle = motionFeatures.isReciprocatingHorizontal || motionFeatures.isReciprocatingVertical
-                  ? '#ec4899' // Pink highlight on dynamic waving
+                  ? '#ec4899'
                   : '#06b6d4'
                 ctx.lineWidth = 2.5
                 ctx.beginPath()
@@ -329,7 +341,7 @@ export default function SignBridgePage() {
                 }
                 ctx.stroke()
 
-                // Render Landmark Points in single batch
+                // Landmarks
                 for (let i = 0; i < landmarks3D.length; i++) {
                   const pt = landmarks3D[i]
                   const isTip = i === 4 || i === 8 || i === 12 || i === 16 || i === 20
@@ -340,11 +352,11 @@ export default function SignBridgePage() {
                 }
                 ctx.restore()
 
-                // Layer B: Continuous Kinematic Classification
+                // Layer B: Continuous Classification
                 const classification = classifyContinuousHand(landmarks3D, motionFeatures)
                 lastResultRef.current = classification
 
-                // Layer C: Continuous Decoder & Auto-Debounce (NO pauses needed!)
+                // Layer C: Continuous Decoder
                 const decoderOutput = decoderRef.current.processContinuousFrame(
                   classification.state,
                   classification.gloss,
@@ -355,7 +367,7 @@ export default function SignBridgePage() {
 
                 lastProgressRef.current = decoderOutput.holdProgress
 
-                // Zero-lag direct DOM updates for bottom caption
+                // Zero-lag direct DOM updates
                 if (captionGlossDomRef.current) {
                   if (classification.state === 'recognized') {
                     captionGlossDomRef.current.innerText = classification.gloss || ''
@@ -386,11 +398,16 @@ export default function SignBridgePage() {
                   holdProgressTextDomRef.current.innerText = `${Math.round(decoderOutput.holdProgress * 100)}%`
                 }
 
-                // If a new character/word is committed incrementally, update text
-                if (decoderOutput.committed) {
+                if (decoderOutput.committed && decoderOutput.newChar) {
+                  const updatedTokens = [...recognizedTokens, decoderOutput.newChar]
+                  setRecognizedTokens(updatedTokens)
                   setRecognizedText(decoderOutput.currentText)
+
+                  const translation = translateUzSLSequence(updatedTokens)
+                  setTranslationResult(translation)
+
                   if (captionTextDomRef.current) {
-                    captionTextDomRef.current.innerText = decoderOutput.currentText
+                    captionTextDomRef.current.innerText = translation.fluentUzbek || decoderOutput.currentText
                   }
                 }
               } else {
@@ -406,29 +423,18 @@ export default function SignBridgePage() {
                 decoderRef.current.processContinuousFrame('no_hand', null, null, false, timestamp)
                 lastProgressRef.current = 0
 
-                if (captionGlossDomRef.current) {
-                  captionGlossDomRef.current.innerText = 'Qo‘lingizni ko‘rsating...'
-                }
-                if (captionConfidenceDomRef.current) {
-                  captionConfidenceDomRef.current.innerText = ''
-                }
-                if (motionBadgeDomRef.current) {
-                  motionBadgeDomRef.current.innerText = 'Kutish rejimi'
-                }
-                if (holdProgressDomRef.current) {
-                  holdProgressDomRef.current.style.width = '0%'
-                }
-                if (holdProgressTextDomRef.current) {
-                  holdProgressTextDomRef.current.innerText = '0%'
-                }
+                if (captionGlossDomRef.current) captionGlossDomRef.current.innerText = 'Qo‘lingizni ko‘rsating...'
+                if (captionConfidenceDomRef.current) captionConfidenceDomRef.current.innerText = ''
+                if (motionBadgeDomRef.current) motionBadgeDomRef.current.innerText = 'Kutish rejimi'
+                if (holdProgressDomRef.current) holdProgressDomRef.current.style.width = '0%'
+                if (holdProgressTextDomRef.current) holdProgressTextDomRef.current.innerText = '0%'
               }
             } catch (err) {
-              console.error('Frame detection error:', err)
+              console.error('Frame error:', err)
             } finally {
               isDetectingRef.current = false
             }
 
-            // Sync React State at smooth 10 Hz (every 100ms)
             if (timestamp - lastStateUpdateRef.current >= 100) {
               setCurrentResult(lastResultRef.current)
               setHoldProgress(lastProgressRef.current)
@@ -449,14 +455,14 @@ export default function SignBridgePage() {
         cancelAnimationFrame(animationFrameRef.current)
       }
     }
-  }, [isCameraActive])
+  }, [isCameraActive, recognizedTokens])
 
-  // Speech synthesis in Uzbek
-  const speakText = () => {
-    if (!recognizedText.trim() || typeof window === 'undefined' || !window.speechSynthesis) return
+  const speakText = (textToSpeak?: string) => {
+    const text = textToSpeak || translationResult.fluentUzbek || recognizedText
+    if (!text.trim() || typeof window === 'undefined' || !window.speechSynthesis) return
 
     window.speechSynthesis.cancel()
-    const utterance = new SpeechSynthesisUtterance(recognizedText)
+    const utterance = new SpeechSynthesisUtterance(text)
     utterance.lang = 'uz-UZ'
     utterance.rate = 0.95
 
@@ -467,9 +473,10 @@ export default function SignBridgePage() {
     window.speechSynthesis.speak(utterance)
   }
 
-  const copyToClipboard = () => {
-    if (!recognizedText) return
-    navigator.clipboard.writeText(recognizedText)
+  const copyToClipboard = (textToCopy?: string) => {
+    const text = textToCopy || translationResult.fluentUzbek || recognizedText
+    if (!text) return
+    navigator.clipboard.writeText(text)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
@@ -483,16 +490,30 @@ export default function SignBridgePage() {
   const handleBackspace = () => {
     const updated = decoderRef.current.backspace()
     setRecognizedText(updated)
-    if (captionTextDomRef.current) captionTextDomRef.current.innerText = updated
+    if (recognizedTokens.length > 0) {
+      const trimmed = recognizedTokens.slice(0, -1)
+      setRecognizedTokens(trimmed)
+      const tr = translateUzSLSequence(trimmed)
+      setTranslationResult(tr)
+      if (captionTextDomRef.current) captionTextDomRef.current.innerText = tr.fluentUzbek || updated
+    }
   }
 
   const handleClear = () => {
     decoderRef.current.clear()
+    setRecognizedTokens([])
     setRecognizedText('')
+    setTranslationResult({
+      rawGlosses: [],
+      glossSequence: '',
+      fluentUzbek: '',
+      confidence: 1.0,
+      isDirectMapping: true,
+      uncertainTokens: [],
+    })
     if (captionTextDomRef.current) captionTextDomRef.current.innerText = ''
   }
 
-  // Dataset recording controls
   const handleToggleRecording = () => {
     if (!isRecording) {
       if (!datasetConsent) {
@@ -506,7 +527,9 @@ export default function SignBridgePage() {
       const sample = collectorRef.current.stopAndSave()
       setIsRecording(false)
       if (sample) {
-        setRecordedSamples(collectorRef.current.getSavedSamples())
+        const updated = collectorRef.current.getSavedSamples()
+        setRecordedSamples(updated)
+        setMetrics(getSystemCoverageMetrics())
       }
     }
   }
@@ -529,89 +552,16 @@ export default function SignBridgePage() {
 
   return (
     <div className="flex flex-col min-h-screen">
-      {/* Top Header */}
-      <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur-md sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="h-10 w-10 rounded-xl bg-gradient-to-tr from-teal-500 to-cyan-500 flex items-center justify-center shadow-lg shadow-teal-500/20">
-              <Sparkles className="w-5 h-5 text-slate-950 font-bold" />
-            </div>
-            <div>
-              <div className="flex items-center space-x-2">
-                <h1 className="text-lg font-bold tracking-tight text-white">iFlevox SignBridge</h1>
-                <span className="text-[10px] uppercase tracking-wider font-semibold px-2 py-0.5 rounded-full bg-teal-500/10 text-teal-400 border border-teal-500/20">
-                  Continuous UzSL
-                </span>
-              </div>
-              <p className="text-xs text-slate-400 hidden sm:block">
-                O‘zbek imo-ishora tilini pauzasiz, uzluksiz oqimda matnga aylantirish
-              </p>
-            </div>
-          </div>
-
-          {/* Navigation Tabs */}
-          <nav className="flex items-center space-x-1 sm:space-x-2">
-            <button
-              onClick={() => setActiveTab('app')}
-              className={`px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-all ${
-                activeTab === 'app'
-                  ? 'bg-teal-500 text-slate-950 shadow-md shadow-teal-500/20 font-bold'
-                  : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-              }`}
-            >
-              Uzluksiz Tarjima
-            </button>
-            <button
-              onClick={() => setActiveTab('dataset')}
-              className={`px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium flex items-center space-x-1.5 transition-all ${
-                activeTab === 'dataset'
-                  ? 'bg-teal-500 text-slate-950 shadow-md shadow-teal-500/20 font-bold'
-                  : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-              }`}
-            >
-              <Database className="w-3.5 h-3.5" />
-              <span>Dataset Studio ({recordedSamples.length})</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('vocabulary')}
-              className={`px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium flex items-center space-x-1.5 transition-all ${
-                activeTab === 'vocabulary'
-                  ? 'bg-teal-500 text-slate-950 shadow-md shadow-teal-500/20'
-                  : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-              }`}
-            >
-              <BookOpen className="w-3.5 h-3.5" />
-              <span>Lug‘at ({DACTYL_ALPHABET.length + DYNAMIC_SIGNS.length})</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('architecture')}
-              className={`px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium hidden md:flex items-center space-x-1.5 transition-all ${
-                activeTab === 'architecture'
-                  ? 'bg-teal-500 text-slate-950 shadow-md shadow-teal-500/20'
-                  : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-              }`}
-            >
-              <Cpu className="w-3.5 h-3.5" />
-              <span>Arxitektura</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('privacy')}
-              className={`px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium flex items-center space-x-1.5 transition-all ${
-                activeTab === 'privacy'
-                  ? 'bg-teal-500 text-slate-950 shadow-md shadow-teal-500/20'
-                  : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-              }`}
-            >
-              <ShieldCheck className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Maxfiylik</span>
-            </button>
-          </nav>
-        </div>
-      </header>
+      {/* Top Header Navigation */}
+      <HeaderNav
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        vocabCount={UZSL_COMPREHENSIVE_VOCABULARY.length}
+        sampleCount={recordedSamples.length}
+      />
 
       {/* Main Workspace */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {/* Error notification banner */}
         {modelError && (
           <div className="mb-6 p-4 rounded-xl bg-red-950/60 border border-red-500/30 flex items-start space-x-3 text-red-200">
             <AlertTriangle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
@@ -622,10 +572,10 @@ export default function SignBridgePage() {
           </div>
         )}
 
-        {/* Tab 1: Continuous Natural Camera & Zero-Lag Real Subtitle Interface */}
+        {/* Tab 1: Live Continuous Translation */}
         {activeTab === 'app' && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-            {/* Left Column: Live Camera with Real-Time Continuous Subtitles Overlay */}
+            {/* Left: Video Feed with Broadcast Captions */}
             <div className="lg:col-span-7 flex flex-col space-y-4">
               <div className="relative aspect-[4/3] w-full rounded-2xl overflow-hidden bg-slate-900 border border-slate-800 shadow-2xl flex items-center justify-center group">
                 <video
@@ -643,7 +593,6 @@ export default function SignBridgePage() {
                   }`}
                 />
 
-                {/* Inactive State Overlay */}
                 {!isCameraActive && (
                   <div className="flex flex-col items-center justify-center p-8 text-center z-10 max-w-md">
                     <div className="h-16 w-16 rounded-2xl bg-slate-800/80 border border-slate-700/60 flex items-center justify-center mb-4 text-teal-400">
@@ -651,7 +600,7 @@ export default function SignBridgePage() {
                     </div>
                     <h3 className="text-lg font-semibold text-white mb-2">Uzluksiz jonli kamera rejimi</h3>
                     <p className="text-sm text-slate-400 mb-6">
-                      Harflar orasida to‘xtamasdan tabiiy muloqot qiling. Tizim dinamik harakatlarni va daktil so‘zlarni uzluksiz oqimda avtomatik segmentatsiyalaydi.
+                      Harflar va so‘zlar orasida to‘xtamasdan erkin muloqot qiling. Tizim dinamik harakatlarni va daktil so‘zlarni uzluksiz oqimda avtomatik segmentatsiyalaydi.
                     </p>
                     <button
                       onClick={startCamera}
@@ -673,7 +622,6 @@ export default function SignBridgePage() {
                   </div>
                 )}
 
-                {/* Live Top Status Overlays */}
                 {isCameraActive && (
                   <div className="absolute top-3 left-3 right-3 flex items-center justify-between pointer-events-none z-20">
                     <div className="flex items-center space-x-2 bg-slate-950/80 backdrop-blur-md px-3 py-1.5 rounded-full border border-slate-700/50 text-xs">
@@ -705,10 +653,9 @@ export default function SignBridgePage() {
                   </div>
                 )}
 
-                {/* REAL-TIME SCREEN BOTTOM CAPTION (CONTINUOUS BROADCAST SUBTITLES) */}
+                {/* Broadcast Subtitle Bar */}
                 {isCameraActive && showCaptions && (
                   <div className="absolute bottom-4 left-4 right-4 z-30 pointer-events-none flex flex-col items-center">
-                    {/* Live Kinematic Stream Status Badge */}
                     <div className="mb-2">
                       <span
                         ref={motionBadgeDomRef}
@@ -718,9 +665,7 @@ export default function SignBridgePage() {
                       </span>
                     </div>
 
-                    {/* CINEMATIC BROADCAST SUBTITLES / CAPTION BAR */}
                     <div className="w-full max-w-xl bg-slate-950/90 backdrop-blur-xl border border-slate-700/80 rounded-2xl p-3.5 sm:p-4 shadow-2xl flex flex-col items-center text-center">
-                      {/* Active Live Word / Letter Display */}
                       <div className="flex items-center justify-center space-x-3 mb-1">
                         <span className="px-2 py-0.5 rounded bg-teal-500 text-slate-950 font-black text-[11px] font-mono uppercase tracking-wider">
                           Jonli
@@ -742,7 +687,6 @@ export default function SignBridgePage() {
                         </span>
                       </div>
 
-                      {/* Cumulative Real-Time Continuous Transcript */}
                       <div className="w-full pt-2 border-t border-slate-800/80 mt-1">
                         <p
                           ref={captionTextDomRef}
@@ -754,7 +698,7 @@ export default function SignBridgePage() {
                               : 'text-sm sm:text-base'
                           }`}
                         >
-                          {recognizedText || '[Subtitr matni shu yerda uzluksiz chiqadi]'}
+                          {translationResult.fluentUzbek || recognizedText || '[Subtitr matni shu yerda uzluksiz chiqadi]'}
                         </p>
                       </div>
                     </div>
@@ -762,7 +706,7 @@ export default function SignBridgePage() {
                 )}
               </div>
 
-              {/* Camera & Caption Controls Bar */}
+              {/* Controls */}
               <div className="flex flex-wrap items-center justify-between bg-slate-900/60 p-3 rounded-xl border border-slate-800 gap-2">
                 <div className="flex items-center space-x-3 text-xs text-slate-400">
                   <div className="flex items-center space-x-1">
@@ -775,7 +719,6 @@ export default function SignBridgePage() {
                   </div>
                 </div>
 
-                {/* Caption size switch */}
                 <div className="flex items-center space-x-1 text-xs text-slate-300 bg-slate-950/60 p-1 rounded-lg border border-slate-800">
                   <span className="text-[10px] text-slate-500 px-1 font-semibold uppercase">Shrift:</span>
                   <button
@@ -827,139 +770,102 @@ export default function SignBridgePage() {
               </div>
             </div>
 
-            {/* Right Column: Continuous Recognition Dashboard & Full Text Log */}
+            {/* Right: Multi-Layer Translation Cards */}
             <div className="lg:col-span-5 flex flex-col space-y-4">
-              {/* Current Detection State Card */}
-              <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 shadow-xl relative overflow-hidden">
-                <div className="flex items-center justify-between mb-4">
-                  <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                    Joriy aniqlash holati
+              {/* Fluent Uzbek Output Card */}
+              <div className="p-5 rounded-2xl bg-gradient-to-br from-slate-900 to-slate-950 border border-teal-500/30 shadow-xl relative overflow-hidden">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-bold uppercase tracking-wider text-teal-400 flex items-center space-x-1.5">
+                    <Languages className="w-4 h-4" />
+                    <span>Yozma O‘zbekcha Tarjima (Grammatika)</span>
                   </span>
-                  {currentResult.state === 'recognized' && (
-                    <span className="flex items-center space-x-1 text-xs px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium">
-                      <CheckCircle2 className="w-3 h-3" />
-                      <span>Aniqlik: {Math.round(currentResult.confidence * 100)}%</span>
-                    </span>
-                  )}
-                  {currentResult.state === 'transition' && (
-                    <span className="text-xs px-2.5 py-1 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 font-medium">
-                      O‘tish harakati...
-                    </span>
-                  )}
-                  {currentResult.state === 'unknown_gesture' && (
-                    <span className="text-xs px-2.5 py-1 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 font-medium">
-                      Noma’lum ishora
-                    </span>
-                  )}
-                  {currentResult.state === 'no_hand' && (
-                    <span className="text-xs px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 border border-slate-700 font-medium">
-                      Kutish rejimi
-                    </span>
-                  )}
-                </div>
-
-                <div className="flex items-center space-x-4 mb-4">
-                  <div className="h-16 w-16 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center flex-shrink-0 shadow-inner">
-                    {currentResult.state === 'recognized' ? (
-                      <span className="text-3xl font-black text-teal-400 font-mono">
-                        {currentResult.gloss}
-                      </span>
-                    ) : (
-                      <HelpCircle className="w-7 h-7 text-slate-500" />
-                    )}
-                  </div>
-                  <div>
-                    <h4 className="text-base font-semibold text-white">
-                      {currentResult.state === 'recognized'
-                        ? `Ishora: ${currentResult.gloss}`
-                        : currentResult.state === 'transition'
-                        ? 'Oraliq harakat'
-                        : currentResult.state === 'unknown_gesture'
-                        ? 'Model lug‘atida yo‘q'
-                        : 'Qo‘l kutilmoqda'}
-                    </h4>
-                    <p className="text-xs text-slate-400 leading-relaxed mt-0.5">
-                      {currentResult.description}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Honest Transparency Note */}
-                <div className="pt-3 border-t border-slate-800/80 flex items-start space-x-2 text-[11px] text-slate-400">
-                  <Info className="w-3.5 h-3.5 text-teal-400 flex-shrink-0 mt-0.5" />
-                  <span>
-                    Zero-fabrication & Continuous Flow: Foydalanuvchi sun’iy ravishda to‘xtab qolishi shart emas. Ishoralar tezlanish va apels (kinematic peak) asosida darhol tan olinadi.
-                  </span>
-                </div>
-              </div>
-
-              {/* Text Output & Transcription Buffer */}
-              <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 shadow-xl flex flex-col">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center space-x-2">
-                    <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                      Yig‘ilgan O‘zbekcha matn
-                    </span>
-                    <span className="text-[11px] text-slate-500 font-mono">
-                      ({recognizedText.length} belgi)
-                    </span>
-                  </div>
                   <div className="flex items-center space-x-1">
                     <button
-                      onClick={speakText}
-                      disabled={!recognizedText.trim() || speechActive}
+                      onClick={() => speakText(translationResult.fluentUzbek)}
+                      disabled={!translationResult.fluentUzbek || speechActive}
+                      className="p-1.5 rounded-lg text-slate-400 hover:text-teal-400 hover:bg-slate-800 transition-colors"
                       title="Ovoz chiqarib o‘qish"
-                      className="p-1.5 rounded-lg text-slate-400 hover:text-teal-400 hover:bg-slate-800 transition-colors disabled:opacity-30"
                     >
                       <Volume2 className={`w-4 h-4 ${speechActive ? 'text-teal-400 animate-pulse' : ''}`} />
                     </button>
                     <button
-                      onClick={copyToClipboard}
-                      disabled={!recognizedText.trim()}
+                      onClick={() => copyToClipboard(translationResult.fluentUzbek)}
+                      disabled={!translationResult.fluentUzbek}
+                      className="p-1.5 rounded-lg text-slate-400 hover:text-teal-400 hover:bg-slate-800 transition-colors"
                       title="Nusxa olish"
-                      className="p-1.5 rounded-lg text-slate-400 hover:text-teal-400 hover:bg-slate-800 transition-colors disabled:opacity-30"
                     >
                       {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
                     </button>
-                    <button
-                      onClick={handleClear}
-                      disabled={!recognizedText}
-                      title="Tozalash"
-                      className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-slate-800 transition-colors disabled:opacity-30"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
                   </div>
                 </div>
 
-                {/* Textarea representation */}
-                <div className="min-h-[140px] p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-sm font-sans leading-relaxed text-slate-100 flex flex-col justify-between mb-3 shadow-inner">
-                  <div className="break-words whitespace-pre-wrap">
-                    {recognizedText || (
-                      <span className="text-slate-600 italic">
-                        Kameraga O‘zbek daktil harflari yoki ishoralarini ko‘rsatib, matn hosil qiling...
+                <div className="min-h-[70px] p-3 rounded-xl bg-slate-950/80 border border-slate-800 flex items-center mb-2">
+                  <p className="text-base font-semibold text-white leading-relaxed">
+                    {translationResult.fluentUzbek || (
+                      <span className="text-slate-600 italic font-normal text-sm">
+                        Imo-ishora ketma-ketligi aniqlangach, bu yerda tabiiy o‘zbek tilidagi gap hosil bo‘ladi...
                       </span>
                     )}
+                  </p>
+                </div>
+
+                {translationResult.appliedGrammarRule && (
+                  <div className="text-[11px] text-teal-300 flex items-center space-x-1">
+                    <CheckCircle2 className="w-3 h-3 text-teal-400 flex-shrink-0" />
+                    <span>Qoida: {translationResult.appliedGrammarRule}</span>
                   </div>
-                  {recognizedText && (
-                    <div className="self-end text-[10px] text-slate-500 font-mono mt-2">
-                      Tayyor
-                    </div>
+                )}
+              </div>
+
+              {/* Raw Sequence Card */}
+              <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 shadow-xl flex flex-col">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center space-x-2">
+                    <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                      Aniqlangan Ishoralar Ketma-ketligi (Glosses)
+                    </span>
+                    <span className="text-[11px] text-slate-500 font-mono">
+                      ({recognizedTokens.length} ta ishora)
+                    </span>
+                  </div>
+                  <button
+                    onClick={handleClear}
+                    disabled={recognizedTokens.length === 0}
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-slate-800 transition-colors"
+                    title="Tozalash"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="min-h-[60px] p-2.5 rounded-xl bg-slate-950 border border-slate-800 flex flex-wrap gap-1.5 items-center mb-3">
+                  {recognizedTokens.length === 0 ? (
+                    <span className="text-xs text-slate-600 italic">
+                      Hozircha ishoralar oqimi boshlanmadi...
+                    </span>
+                  ) : (
+                    recognizedTokens.map((token, idx) => (
+                      <span
+                        key={idx}
+                        className="px-2 py-0.5 rounded-md bg-teal-950 text-teal-300 border border-teal-800/80 font-mono text-xs font-bold"
+                      >
+                        {token}
+                      </span>
+                    ))
                   )}
                 </div>
 
-                {/* Buffer quick controls (Space, Backspace, Clear) */}
                 <div className="grid grid-cols-3 gap-2">
                   <button
                     onClick={handleAddSpace}
                     className="flex items-center justify-center space-x-1 py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 transition-all active:scale-95"
                   >
                     <Space className="w-3.5 h-3.5" />
-                    <span>Bo‘sh joy (Space)</span>
+                    <span>Bo‘sh joy</span>
                   </button>
                   <button
                     onClick={handleBackspace}
-                    disabled={!recognizedText}
+                    disabled={recognizedTokens.length === 0 && !recognizedText}
                     className="flex items-center justify-center space-x-1 py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 transition-all active:scale-95 disabled:opacity-40"
                   >
                     <Delete className="w-3.5 h-3.5" />
@@ -967,7 +873,7 @@ export default function SignBridgePage() {
                   </button>
                   <button
                     onClick={handleClear}
-                    disabled={!recognizedText}
+                    disabled={recognizedTokens.length === 0}
                     className="flex items-center justify-center space-x-1 py-2 px-3 rounded-xl bg-red-950/40 hover:bg-red-900/60 text-red-300 text-xs font-medium border border-red-900/40 transition-all active:scale-95 disabled:opacity-40"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
@@ -979,38 +885,22 @@ export default function SignBridgePage() {
               {/* Supported Quick Reference Card */}
               <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 text-xs text-slate-400">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="font-semibold text-slate-300">Tezkor tavsiya etilgan ishoralar:</span>
+                  <span className="font-semibold text-slate-300">Faol modeldagi ishoralar:</span>
                   <button
                     onClick={() => setActiveTab('vocabulary')}
                     className="text-teal-400 hover:underline flex items-center space-x-1"
                   >
-                    <span>Barchasini ko‘rish</span>
+                    <span>To‘liq lug‘at</span>
                     <ExternalLink className="w-3 h-3" />
                   </button>
                 </div>
                 <div className="flex flex-wrap gap-1.5">
-                  {DACTYL_ALPHABET.map((item) => (
+                  {UZSL_COMPREHENSIVE_VOCABULARY.filter((s) => s.isSupportedInCurrentModel).map((item) => (
                     <span
                       key={item.gloss}
                       className="px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300 font-mono font-medium hover:border-teal-500 transition-colors cursor-pointer"
-                      onClick={() => {
-                        setSelectedVocab(item)
-                        setActiveTab('vocabulary')
-                      }}
-                      title={item.name}
-                    >
-                      {item.gloss}
-                    </span>
-                  ))}
-                  {DYNAMIC_SIGNS.map((item) => (
-                    <span
-                      key={item.gloss}
-                      className="px-2 py-0.5 rounded bg-teal-950/50 border border-teal-800/50 text-teal-300 font-mono text-[11px] hover:border-teal-400 transition-colors cursor-pointer"
-                      onClick={() => {
-                        setSelectedVocab(item)
-                        setActiveTab('vocabulary')
-                      }}
-                      title={item.description}
+                      onClick={() => setActiveTab('vocabulary')}
+                      title={item.uzbekName}
                     >
                       {item.gloss}
                     </span>
@@ -1021,302 +911,35 @@ export default function SignBridgePage() {
           </div>
         )}
 
-        {/* Tab 2: Dataset Studio & Informed Consent Collection */}
+        {/* Tab 2: Vocabulary Database */}
+        {activeTab === 'vocabulary' && <VocabularyView />}
+
+        {/* Tab 3: Grammar & Synthesis */}
+        {activeTab === 'grammar' && <GrammarView />}
+
+        {/* Tab 4: Dashboard & Metrics */}
+        {activeTab === 'dashboard' && <DashboardView metrics={metrics} fps={fps} />}
+
+        {/* Tab 5: Dataset Studio */}
         {activeTab === 'dataset' && (
-          <div className="space-y-6">
-            <div className="bg-slate-900 p-6 rounded-2xl border border-slate-800">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div>
-                  <h2 className="text-xl font-bold text-white mb-2 flex items-center space-x-2">
-                    <Database className="w-5 h-5 text-teal-400" />
-                    <span>Lokal O‘zbek Imo-ishora Ma’lumotlar To‘plami (Dataset Studio)</span>
-                  </h2>
-                  <p className="text-sm text-slate-300 leading-relaxed max-w-3xl">
-                    Kelgusida kengroq temporal modellarni (LSTM/Transformer) o‘qitish uchun haqiqiy imo-ishora 3D koordinatalarini to‘plash moduli. Hech qanday video yoki kadr serverga ketmaydi — faqat matematik nuqtalar brauzerda saqlanadi.
-                  </p>
-                </div>
-                <div className="flex items-center space-x-2">
-                  <button
-                    onClick={handleExportDataset}
-                    disabled={recordedSamples.length === 0}
-                    className="inline-flex items-center space-x-2 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold text-xs transition-all disabled:opacity-40"
-                  >
-                    <Download className="w-4 h-4" />
-                    <span>JSON Eksport ({recordedSamples.length})</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Informed Consent Agreement */}
-              <div className="mt-5 p-4 rounded-xl bg-slate-950 border border-slate-800">
-                <label className="flex items-start space-x-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={datasetConsent}
-                    onChange={(e) => {
-                      setDatasetConsent(e.target.checked)
-                      collectorRef.current.setConsent(e.target.checked)
-                    }}
-                    className="mt-1 h-4 w-4 rounded border-slate-700 bg-slate-900 text-teal-500 focus:ring-teal-400"
-                  />
-                  <div className="text-xs text-slate-300 leading-relaxed">
-                    <strong className="text-white block mb-0.5">Xabardor qilingan rozilik (Informed Consent):</strong>
-                    Men kameram orqali olingan qo‘l koordinatalari faqat O‘zbek imo-ishora tilini o‘rganuvchi ochiq kodli modelni rivojlantirish uchun lokal saqlanishiga roziman. Shaxsiy video tasvirlarim saqlanmasligi va istalgan payt ma’lumotlarni o‘chirib tashlash huquqim borligini tushunaman.
-                  </div>
-                </label>
-              </div>
-
-              {/* Recorder Toolbar */}
-              <div className="mt-5 flex flex-wrap items-center justify-between p-4 rounded-xl bg-slate-950/80 border border-slate-800 gap-3">
-                <div className="flex items-center space-x-3">
-                  <span className="text-xs text-slate-400 font-semibold uppercase">Yoziladigan ishora:</span>
-                  <select
-                    value={recordingLabel}
-                    onChange={(e) => setRecordingLabel(e.target.value)}
-                    className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white font-mono"
-                  >
-                    {DYNAMIC_SIGNS.map((s) => (
-                      <option key={s.gloss} value={s.gloss}>
-                        {s.gloss} — {s.name}
-                      </option>
-                    ))}
-                    {DACTYL_ALPHABET.map((s) => (
-                      <option key={s.gloss} value={s.gloss}>
-                        {s.gloss} (Daktil)
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="flex items-center space-x-3">
-                  <button
-                    onClick={handleToggleRecording}
-                    disabled={!isCameraActive || !datasetConsent}
-                    className={`inline-flex items-center space-x-2 px-5 py-2 rounded-xl text-xs font-bold transition-all ${
-                      isRecording
-                        ? 'bg-red-600 hover:bg-red-500 text-white animate-pulse'
-                        : 'bg-teal-500 hover:bg-teal-400 text-slate-950 disabled:opacity-40'
-                    }`}
-                  >
-                    <Radio className="w-4 h-4" />
-                    <span>{isRecording ? 'Yozishni to‘xtatish' : 'Namuna yozishni boshlash'}</span>
-                  </button>
-                  {!isCameraActive && (
-                    <span className="text-[11px] text-amber-400">Avval kamerani yoqing</span>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Saved Samples Grid */}
-            <div className="bg-slate-900 p-6 rounded-2xl border border-slate-800">
-              <h3 className="text-base font-bold text-white mb-3">
-                Lokal saqlangan ketma-ketliklar ({recordedSamples.length} ta namuna)
-              </h3>
-              {recordedSamples.length === 0 ? (
-                <p className="text-xs text-slate-500 italic">
-                  Hozircha yozib olingan namunalar yo‘q. Yuqoridagi tugma orqali o‘z ishoralaringizni yozib olishingiz mumkin.
-                </p>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                  {recordedSamples.map((sample) => (
-                    <div
-                      key={sample.id}
-                      className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between"
-                    >
-                      <div>
-                        <span className="font-mono text-teal-400 font-bold text-sm block">
-                          {sample.label}
-                        </span>
-                        <span className="text-[10px] text-slate-500 block">
-                          {sample.frames.length} kadr ({sample.fps} FPS) • {new Date(sample.recordedAt).toLocaleTimeString()}
-                        </span>
-                      </div>
-                      <button
-                        onClick={() => handleDeleteSample(sample.id)}
-                        className="p-1.5 rounded-lg text-slate-500 hover:text-red-400 transition-colors"
-                        title="O‘chirish"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
+          <DatasetStudioView
+            recordedSamples={recordedSamples}
+            isCameraActive={isCameraActive}
+            isRecording={isRecording}
+            datasetConsent={datasetConsent}
+            recordingLabel={recordingLabel}
+            setRecordingLabel={setRecordingLabel}
+            setDatasetConsent={setDatasetConsent}
+            onToggleRecording={handleToggleRecording}
+            onExportDataset={handleExportDataset}
+            onDeleteSample={handleDeleteSample}
+          />
         )}
 
-        {/* Tab 3: Vocabulary Explorer */}
-        {activeTab === 'vocabulary' && (
-          <div className="space-y-6">
-            <div className="bg-slate-900 p-6 rounded-2xl border border-slate-800">
-              <h2 className="text-xl font-bold text-white mb-2">
-                O‘zbek imo-ishora tili (UzSL) — Qo‘llab-quvvatlanuvchi lug‘at
-              </h2>
-              <p className="text-sm text-slate-300 leading-relaxed max-w-3xl mb-4">
-                Ushbu tizim O‘zbekiston Kar-soqovlar jamiyati (UzbOI), 101-sonli ixtisoslashtirilgan maktab-internati va O‘zbek imo-ishora tili (UzSL) bo‘yicha ilmiy tadqiqotlar asosida shakllantirilgan.
-              </p>
-              <div className="p-4 rounded-xl bg-teal-950/30 border border-teal-500/30 text-xs text-teal-200">
-                <strong className="font-semibold block mb-1">Akademik va etik halollik bildirishnomasi:</strong>
-                Amerika imo-ishora tili (ASL) yoki Koreys imo-ishora tili (KSL) O‘zbek imo-ishora tili deb soxtalashtirilmagan. Daktil harflari va so‘zlar mustaqil ilmiy manbalar bilan solishtirilib, faqat 100% tasdiqlangan pozalar kiritilgan.
-              </div>
-            </div>
+        {/* Tab 6: Sources Register */}
+        {activeTab === 'sources' && <SourcesView />}
 
-            {/* Dynamic Signs Section */}
-            <div>
-              <h3 className="text-lg font-bold text-white mb-3 flex items-center space-x-2">
-                <span className="h-2 w-2 rounded-full bg-cyan-400" />
-                <span>Uzluksiz dinamik muloqot ishoralari (Dynamic Words)</span>
-              </h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {DYNAMIC_SIGNS.map((item) => (
-                  <div
-                    key={item.gloss}
-                    className={`p-4 rounded-xl bg-slate-900 border transition-all cursor-pointer ${
-                      selectedVocab?.gloss === item.gloss
-                        ? 'border-cyan-500 shadow-lg shadow-cyan-500/10'
-                        : 'border-slate-800 hover:border-slate-700'
-                    }`}
-                    onClick={() => setSelectedVocab(item)}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-lg font-bold text-cyan-400 font-mono">
-                        {item.gloss}
-                      </span>
-                      <span className="text-[11px] px-2 py-0.5 rounded-full bg-cyan-950 text-cyan-300 border border-cyan-800 font-medium">
-                        Dinamik so‘z
-                      </span>
-                    </div>
-                    <h4 className="text-sm font-semibold text-white mb-1">{item.name}</h4>
-                    <p className="text-xs text-slate-400 mb-2 leading-relaxed">
-                      {item.description}
-                    </p>
-                    <div className="text-[11px] text-slate-300 bg-slate-950/60 p-2 rounded border border-slate-800/80">
-                      <strong>Harakat:</strong> {item.motionType}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Dactyl Alphabet Section */}
-            <div>
-              <h3 className="text-lg font-bold text-white mb-3 flex items-center space-x-2">
-                <span className="h-2 w-2 rounded-full bg-teal-400" />
-                <span>O‘zbek daktil alifbosi (Barmoq harflari)</span>
-              </h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                {DACTYL_ALPHABET.map((item) => (
-                  <div
-                    key={item.gloss}
-                    className={`p-4 rounded-xl bg-slate-900 border transition-all cursor-pointer ${
-                      selectedVocab?.gloss === item.gloss
-                        ? 'border-teal-500 shadow-lg shadow-teal-500/10'
-                        : 'border-slate-800 hover:border-slate-700'
-                    }`}
-                    onClick={() => setSelectedVocab(item)}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-2xl font-black text-teal-400 font-mono">
-                        {item.gloss}
-                      </span>
-                      <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 font-medium">
-                        Daktil
-                      </span>
-                    </div>
-                    <h4 className="text-sm font-semibold text-white mb-1">{item.name}</h4>
-                    <p className="text-xs text-slate-400 mb-2 leading-relaxed">
-                      {item.description}
-                    </p>
-                    <div className="text-[11px] text-teal-300 font-mono bg-slate-950/60 p-2 rounded border border-slate-800/80">
-                      {item.handshapeDescription}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Tab 4: Technical Architecture & Continuous Recognition */}
-        {activeTab === 'architecture' && (
-          <div className="space-y-6">
-            <div className="bg-slate-900 p-6 rounded-2xl border border-slate-800">
-              <h2 className="text-xl font-bold text-white mb-2">
-                {CONTINUOUS_RECOGNITION_ARCHITECTURE.title}
-              </h2>
-              <p className="text-sm text-slate-300 leading-relaxed max-w-3xl mb-4">
-                {CONTINUOUS_RECOGNITION_ARCHITECTURE.description}
-              </p>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
-                {CONTINUOUS_RECOGNITION_ARCHITECTURE.phases.map((ph, idx) => (
-                  <div key={idx} className="p-4 rounded-xl bg-slate-950 border border-slate-800">
-                    <strong className="text-teal-400 block text-xs uppercase font-bold mb-1">
-                      {ph.name}
-                    </strong>
-                    <p className="text-xs text-slate-400 leading-relaxed">{ph.detail}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
-                <div className="h-10 w-10 rounded-xl bg-teal-500/10 text-teal-400 flex items-center justify-center font-bold mb-4 border border-teal-500/20">
-                  A
-                </div>
-                <h3 className="text-base font-bold text-white mb-2">
-                  Qatlam 1: {TECHNICAL_ARCHITECTURE.layerA.name}
-                </h3>
-                <p className="text-xs text-slate-400 mb-3 leading-relaxed">
-                  {TECHNICAL_ARCHITECTURE.layerA.model}
-                </p>
-                <ul className="text-xs text-slate-300 space-y-1.5 list-disc list-inside">
-                  <li>{TECHNICAL_ARCHITECTURE.layerA.landmarks}</li>
-                  <li>{TECHNICAL_ARCHITECTURE.layerA.execution}</li>
-                  <li>Hech qanday kadr serverga yuborilmaydi</li>
-                </ul>
-              </div>
-
-              <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
-                <div className="h-10 w-10 rounded-xl bg-cyan-500/10 text-cyan-400 flex items-center justify-center font-bold mb-4 border border-cyan-500/20">
-                  B
-                </div>
-                <h3 className="text-base font-bold text-white mb-2">
-                  Qatlam 2: {TECHNICAL_ARCHITECTURE.layerB.name}
-                </h3>
-                <p className="text-xs text-slate-400 mb-3 leading-relaxed">
-                  {TECHNICAL_ARCHITECTURE.layerB.description}
-                </p>
-                <ul className="text-xs text-slate-300 space-y-1.5 list-disc list-inside">
-                  <li>Tezlik (velocity) va yo‘nalish o‘zgarishlari</li>
-                  <li>Stroke apex (kinematik cho‘qqi) tahlili</li>
-                  <li>Soxta oraliq harakatlarni 'transition' sifatida ajratish</li>
-                </ul>
-              </div>
-
-              <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
-                <div className="h-10 w-10 rounded-xl bg-indigo-500/10 text-indigo-400 flex items-center justify-center font-bold mb-4 border border-indigo-500/20">
-                  C
-                </div>
-                <h3 className="text-base font-bold text-white mb-2">
-                  Qatlam 3: {TECHNICAL_ARCHITECTURE.layerC.name}
-                </h3>
-                <p className="text-xs text-slate-400 mb-3 leading-relaxed">
-                  {TECHNICAL_ARCHITECTURE.layerC.description}
-                </p>
-                <ul className="text-xs text-slate-300 space-y-1.5 list-disc list-inside">
-                  <li>{TECHNICAL_ARCHITECTURE.layerC.mechanism}</li>
-                  <li>Takroriy soxta harflarni bostirish</li>
-                  <li>Tabiiy pauzada avtomatik bo‘sh joy (space) kiritish</li>
-                </ul>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Tab 5: Privacy & Ethics */}
+        {/* Tab 7: Privacy Policy */}
         {activeTab === 'privacy' && (
           <div className="space-y-6 max-w-4xl">
             <div className="bg-slate-900 p-6 rounded-2xl border border-slate-800">
@@ -1347,7 +970,7 @@ export default function SignBridgePage() {
       {/* Footer */}
       <footer className="border-t border-slate-900 bg-slate-950/80 py-6 mt-12 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <p>© 2026 iFlevox SignBridge. O‘zbek imo-ishora tilini qo‘llab-quvvatlash tashabbusi.</p>
+          <p>© 2026 iFlevox SignBridge. O‘zbek imo-ishora tilini qo‘llab-quvvatlash platformasi.</p>
           <div className="flex items-center space-x-4 text-slate-400">
             <span>Uzluksiz va xolis AI</span>
             <span>•</span>
