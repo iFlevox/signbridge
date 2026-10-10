@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { classifyHandLandmarks } from './sign-classifier'
-import { Landmark3D } from './recognition-types'
+import { classifyContinuousHand, classifyHandLandmarks, extractMotionFeatures } from './sign-classifier'
+import { Landmark3D, TemporalFrame, DynamicMotionFeatures } from './recognition-types'
 
 function createStandardHand(extended: { thumb?: boolean; index?: boolean; middle?: boolean; ring?: boolean; pinky?: boolean }): Landmark3D[] {
   const points: Landmark3D[] = []
@@ -11,8 +11,6 @@ function createStandardHand(extended: { thumb?: boolean; index?: boolean; middle
   points[1] = { x: 0.45, y: 0.72, z: 0 }
   points[2] = { x: 0.40, y: 0.65, z: 0 }
   points[3] = { x: 0.38, y: 0.60, z: 0 }
-  // When extended: reaches out wide (0.22, 0.45)
-  // When curled: tucked in (0.45, 0.65)
   points[4] = extended.thumb ? { x: 0.22, y: 0.45, z: 0 } : { x: 0.45, y: 0.65, z: 0 }
 
   // Index points
@@ -22,7 +20,7 @@ function createStandardHand(extended: { thumb?: boolean; index?: boolean; middle
   points[8] = extended.index ? { x: 0.45, y: 0.22, z: 0 } : { x: 0.45, y: 0.62, z: 0 }
 
   // Middle points
-  points[9] = { x: 0.50, y: 0.50, z: 0 } // MCP, palmBase = dist(0, 9) = 0.30
+  points[9] = { x: 0.50, y: 0.50, z: 0 }
   points[10] = { x: 0.50, y: 0.42, z: 0 }
   points[11] = { x: 0.50, y: 0.32, z: 0 }
   points[12] = extended.middle ? { x: 0.50, y: 0.20, z: 0 } : { x: 0.50, y: 0.62, z: 0 }
@@ -42,7 +40,7 @@ function createStandardHand(extended: { thumb?: boolean; index?: boolean; middle
   return points
 }
 
-describe('Sign Classifier Truthful Architecture', () => {
+describe('Continuous Sign Classifier & Kinematic Motion Suite', () => {
   it('returns no_hand when landmarks are null or empty', () => {
     const res = classifyHandLandmarks(null)
     expect(res.state).toBe('no_hand')
@@ -106,8 +104,7 @@ describe('Sign Classifier Truthful Architecture', () => {
     expect(res.confidence).toBeGreaterThan(0.8)
   })
 
-  it('honestly returns unknown_gesture for non-dictionary hand shapes (e.g. only Ring finger extended)', () => {
-    // Only ring finger extended — not a standard letter in Uzbek Dactyl
+  it('honestly returns unknown_gesture for non-dictionary hand shapes', () => {
     const hand = createStandardHand({ thumb: false, index: false, middle: false, ring: true, pinky: false })
     const res = classifyHandLandmarks(hand)
     expect(res.state).toBe('unknown_gesture')
@@ -115,9 +112,71 @@ describe('Sign Classifier Truthful Architecture', () => {
     expect(res.description).toContain('joriy model lug‘atida mavjud emas')
   })
 
-  it('never outputs a gloss when confidence is zero or unknown', () => {
-    const res = classifyHandLandmarks([])
-    expect(res.gloss).toBeNull()
-    expect(res.confidence).toBe(0)
+  it('extracts temporal motion features from frame history', () => {
+    const frames: TemporalFrame[] = []
+    // Simulate horizontal waving motion over 10 frames
+    for (let i = 0; i < 10; i++) {
+      const xOffset = Math.sin((i / 10) * Math.PI * 2) * 0.1
+      const hand = createStandardHand({ index: true })
+      hand[0].x += xOffset
+      frames.push({
+        landmarks: hand,
+        timestampMs: 1000 + i * 40,
+        wristVelocity: 0.5,
+        fingersVelocity: 0.5,
+        palmScale: 0.3,
+      })
+    }
+
+    const motion = extractMotionFeatures(frames)
+    expect(motion.frameCount).toBe(10)
+    expect(motion.totalTrajectoryLength).toBeGreaterThan(0.05)
+    expect(motion.isReciprocatingHorizontal).toBe(true)
+  })
+
+  it('correctly recognizes dynamic sign YO‘Q from continuous waving motion', () => {
+    const hand = createStandardHand({ index: true, middle: true, ring: false, pinky: false, thumb: false })
+    const motion: DynamicMotionFeatures = {
+      durationMs: 400,
+      frameCount: 10,
+      netDisplacementX: 0.01,
+      netDisplacementY: 0,
+      totalTrajectoryLength: 0.25,
+      peakVelocity: 0.8,
+      meanVelocity: 0.5,
+      dominantDirection: 'circular',
+      isReciprocatingHorizontal: true,
+      isReciprocatingVertical: false,
+      strokeDetected: true,
+      strokeCenterLandmarks: hand,
+    }
+
+    const res = classifyContinuousHand(hand, motion)
+    expect(res.state).toBe('recognized')
+    expect(res.gloss).toBe('YO‘Q')
+    expect(res.isDynamicStroke).toBe(true)
+  })
+
+  it('correctly recognizes dynamic sign HA from vertical nodding motion', () => {
+    const hand = createStandardHand({ thumb: false, index: false, middle: false, ring: false, pinky: false })
+    const motion: DynamicMotionFeatures = {
+      durationMs: 400,
+      frameCount: 10,
+      netDisplacementX: 0,
+      netDisplacementY: 0.02,
+      totalTrajectoryLength: 0.22,
+      peakVelocity: 0.7,
+      meanVelocity: 0.45,
+      dominantDirection: 'down',
+      isReciprocatingHorizontal: false,
+      isReciprocatingVertical: true,
+      strokeDetected: true,
+      strokeCenterLandmarks: hand,
+    }
+
+    const res = classifyContinuousHand(hand, motion)
+    expect(res.state).toBe('recognized')
+    expect(res.gloss).toBe('HA')
+    expect(res.isDynamicStroke).toBe(true)
   })
 })

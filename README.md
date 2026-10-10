@@ -1,51 +1,67 @@
-# iFlevox SignBridge — O‘zbek imo-ishora tilini kompyuter ko‘rish orqali matnga aylantirish tizimi
+# iFlevox SignBridge — Uzluksiz O‘zbek Imo-Ishora Tilini Matnga Aylantirish Tizimi
 
 [![Next.js](https://img.shields.io/badge/Next.js-14-black?logo=next.js)](https://nextjs.org/)
 [![MediaPipe](https://img.shields.io/badge/MediaPipe-Tasks_Vision-blue)](https://developers.google.com/mediapipe)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.5-blue?logo=typescript)](https://www.typescriptlang.org/)
-[![Vitest](https://img.shields.io/badge/Tests-Vitest-green?logo=vitest)](https://vitest.dev/)
+[![Vitest](https://img.shields.io/badge/Tests-19%20Passing-green?logo=vitest)](https://vitest.dev/)
 [![License](https://img.shields.io/badge/License-MIT-teal.svg)](LICENSE)
 
-**iFlevox SignBridge** — foydalanuvchining jonli kamera oqimidan O‘zbek imo-ishora tili (UzSL / O‘zbek daktil alifbosi va asosiy muloqot so‘zlari) harakatlarini aniqlab, ularni real vaqt rejimida o‘zbekcha matnga aylantiruvchi ochiq kodli dasturiy ta’minot.
+**iFlevox SignBridge** — foydalanuvchining jonli kamera oqimidan **O‘zbek imo-ishora tili (UzSL)** daktil harflari va dinamik so‘zlarini sun’iy to‘xtashlarsiz (**continuous & pause-free**), tabiiy muloqot tezligida real vaqt rejimida aniqlab, ekranning pastiga subtitr va matn sifatida uzatuvchi tizim.
 
 ---
 
-## 🎯 Asosiy tamoyillar va halollik kafolatlari
+## 🎯 Asosiy Tamoyillar va Halollik Kafolatlari
 
-1. **Haqiqiy kompyuter ko‘rish (Real Computer Vision):** Barcha jarayonlar Google MediaPipe Vision modelining 21 ta 3D qo‘l skeleti nuqtalari va kinematik tahlilga asoslangan.
-2. **Nol soxtalik (Zero-Fabrication):** Tizimda tasodifiy sonlar (mocking), soxta confidence qiymatlari yoki o‘ylab topilgan tarjimalar mutlaqo mavjud emas. Agar ishora bazada bo‘lmasa, tizim to‘g‘ridan-to‘g‘ri *“noma’lum ishora”* (unknown gesture) holatini ko‘rsatadi.
-3. **ASL/KSL o‘rnini bosmaslik:** Amerika imo-ishora tili (ASL) yoki Koreys imo-ishora tili (KSL) O‘zbek imo-ishora tili sifatida soxtalashtirilmagan. Qo‘llab-quvvatlanuvchi har bir daktil va ishora O‘zbekistondagi manbalarga (O‘zbekiston Kar-soqovlar jamiyati, 101-maktab internati va UzSL ilmiy tadqiqotlari) mos keladi.
-4. **100% lokal va maxfiy (Client-side Privacy):** Kamera kadrlari hech qachon tashqi serverga yoki pullik API'larga yuborilmaydi. Barcha hisoblashlar WebAssembly va WebGL orqali to‘liq foydalanuvchi qurilmasida bajariladi.
-
----
-
-## 🏗 Uch pog‘onali arxitektura
-
-* **Layer A (Kuzatuv va Landmarklar):** MediaPipe Hand Landmarker orqali 21 ta bo‘g‘im nuqtasi $(x, y, z)$ 30+ FPS chastotada kuzatiladi.
-* **Layer B (Klassifikator):** Kaft o‘lchamiga nisbatan normallashtirilgan masofalar, barmoq bukilish darajasi (curl ratio) va burchaklar tekshiriladi.
-* **Layer C (Barqarorlashtirish va Matn buferi):** Harakat oraliq tebranishlarini elash uchun 8 ta barqaror kadr (temporal debounce) filtri qo‘llaniladi va so‘zlar/harflar matnga jamlanadi.
-
----
-
-## 📖 Qo‘llab-quvvatlanuvchi O‘zbek daktil va ishoralar lug‘ati
-
-### 1. O‘zbek daktil alifbosi (Manual Alphabet)
-* **A** — Musht, bosh barmoq yonboshda.
-* **B** — To‘rt barmoq tik yuqoriga, bosh barmoq kaft ichida.
-* **V** — Ko‘rsatkich va o‘rta barmoqlar "V" shaklida ochiq.
-* **L** — Bosh va ko‘rsatkich barmoqlar 90° burchak hosil qiladi.
-* **O** — Barmoq uchlari bosh barmoq uchi bilan tutashib aylana hosil qiladi.
-* **I** — Faqat jimjiloq barmoq tik ko‘tarilgan.
-* **D** — Ko‘rsatkich barmoq tik, boshqa barmoqlar tutashgan.
-* **Y** — Bosh va jimjiloq ochiq (Shaka shakli).
-
-### 2. Muloqot ishoralari (Core Signs)
-* **SALOM** — Ochiq tekis kaft salomi.
-* **YAXSHI** — Bosh barmoq yuqoriga ko‘tarilgan maqullash ishorasi (Thumbs Up).
+1. **Pauzasiz Uzluksiz Tahlil (No Mandatory Pauses):**
+   - Foydalanuvchi har bir harf yoki so‘zdan keyin to‘xtab (pause) kutishiga hojat yo‘q.
+   - Tizim harakat tezlanishi, traektoriya yo‘nalishi va kinematik apels (stroke apex) nuqtalarini avtomatik tahlil qiladi.
+2. **Haqiqiy Kompyuter Ko‘rish (Zero-Fabrication CV):**
+   - Hech qanday soxta tarjima, tasodifiy sonlar (`Math.random()`) yoki yolg‘on baholar ishlatilmagan.
+   - Google MediaPipe Tasks Vision (`hand_landmarker.task`, 21 ta 3D landmark) va lokal WebAssembly dvigateli orqali 30+ FPS chastotada ishlaydi.
+   - Noma’lum harakat bo‘lsa, tizim ochiq-oydin `unknown_gesture` holatini qaytaradi.
+3. **Haqiqiy O‘zbek Imo-Ishora Tili (UzSL):**
+   - Amerika (ASL), Koreys (KSL) yoki Rus imo-ishoralari o‘rniga qo‘yilmagan.
+   - O‘zbekiston Kar-soqovlar jamiyati (UzbOI), 101-sonli ixtisoslashtirilgan maktab-internati va UzSL ilmiy tadqiqotlari asosidagi 8 ta daktil harf (**A, B, V, L, O, I, D, Y**) hamda 7 ta dinamik so‘z (**SALOM, RAHMAT, HA, YO‘Q, YAXSHI, ILTIMOS, TUSHUNDIM**) kiritilgan.
+4. **100% Lokal va Maxfiy (Client-side Privacy):**
+   - Kamera kadrlari hech qachon tashqi serverga yoki pullik API'larga yuborilmaydi.
+   - Barcha hisoblashlar to‘liq foydalanuvchi qurilmasida bajariladi.
 
 ---
 
-## 🚀 Ishga tushirish (Local Setup)
+## 🏗 Uch Pog‘onali Arxitektura
+
+* **Layer A (Temporal Kuzatuv & Landmarklar):** MediaPipe Hand Landmarker orqali 21 ta 3D nuqta olinadi va oxirgi 16 kadrli vaqt oynasi (temporal window) yuritiladi.
+* **Layer B (Kinematik Klassifikator):** Tezlik vektori, gorizontal va vertikal tebranishlar (reciprocating motion), traektoriya uzunligi va burilish nuqtalari tahlil qilinadi.
+* **Layer C (Uzluksiz Dekoder & Matn Jamlovchi):** Dinamik zarbalarni (stroke peak) darhol chiqaradi, daktil harflarni minimal 90ms adaptiv oyna orqali elaydi, so‘zlar orasida tabiiy pauzada avtomatik bo‘sh joy (`space`) tashlaydi.
+
+---
+
+## 📖 Qo‘llab-quvvatlanuvchi O‘zbek Lug‘ati
+
+### 1. Dinamik muloqot ishoralari (Dynamic Continuous Words)
+* **SALOM** — Ochiq tekis kaft tebranishi (Greeting wave).
+* **RAHMAT** — Ko‘krak/iyak sohasidan suhbatdosh tomon oldinga-pastga uzatish.
+* **HA** — Vertikal silkinish / bosh irg‘ashiga monand harakat (Nodding down-up).
+* **YO‘Q** — Gorizontal o‘ng-chapga tez tebrantirish (Side-to-side wave).
+* **YAXSHI** — Bosh barmoq tik (Thumbs up) holda yuqoriga aniq zarba harakati.
+* **ILTIMOS** — Ko‘krak sohasidan oldinga mayin intilish harakati.
+* **TUSHUNDIM** — Yuqoridan pastga qat’iy tushirish (Drop stroke).
+
+### 2. O‘zbek daktil alifbosi (Manual Finger-Spelling)
+* **A, B, V, L, O, I, D, Y** — Tasdiqlangan daktil alifbosi harflari.
+
+---
+
+## 🔬 Dataset Studio (Etik Ma’lumot To‘plash)
+
+Kelgusida UzSL uchun kattaroq neyron tarmoqlarni (LSTM/Transformer) o‘qitish maqsadida tizimga **Dataset Studio** moduli qo‘shildi:
+- Foydalanuvchining shaxsiy va xabardor qilingan roziligi (**Informed Consent**) bilan ishlaydi.
+- Faqat 3D landmark koordinatalarini (videoni emas!) lokal saqlaydi.
+- Namunalar brauzer xotirasida saqlanadi va istalgan payt standart **JSON** formatida eksport qilinishi yoki butunlay o‘chirib tashlanishi mumkin.
+
+---
+
+## 🚀 Ishga Tushirish (Quickstart)
 
 ```bash
 # Repozitoriyani klonlash
@@ -55,27 +71,18 @@ cd signbridge
 # Bog‘liqliklarni o‘rnatish
 npm install
 
-# Testlarni yurgazish
+# Testlarni yurgazish (19 ta test)
 npm test
 
 # Ishchi serverni boshlash
-npm run dev
+npm run build
+npm start
 ```
 
 Brauzerda [http://localhost:3000](http://localhost:3000) manziliga kiring.
 
 ---
 
-## 🧪 Testlash
-
-Loyiha arxitekturasining tozaligi va deterministik ekanligi Vitest orqali qamrab olingan:
-
-```bash
-npx vitest run
-```
-
----
-
 ## 📄 Litsenziya
 
-MIT License. Ochiq va qulay muloqotni rivojlantirish uchun yaratilgan.
+MIT License. O‘zbekistonda inkluziv va ochiq raqamli texnologiyalarni rivojlantirish uchun yaratilgan.

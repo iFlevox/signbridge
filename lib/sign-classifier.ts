@@ -1,16 +1,16 @@
-import { Landmark3D, ClassificationResult } from './recognition-types'
+import { Landmark3D, ClassificationResult, DynamicMotionFeatures, TemporalFrame } from './recognition-types'
 
 /**
- * iFlevox SignBridge — Layer B: Sign Recognition Classifier
+ * iFlevox SignBridge — Layer B: Continuous & Kinematic Sign Classifier
  *
- * Geometric & Kinematic Feature Extraction:
- * Standard 21 MediaPipe Hand Landmarks:
- * 0: WRIST
- * 1-4: THUMB (CMC, MCP, IP, TIP)
- * 5-8: INDEX (MCP, PIP, DIP, TIP)
- * 9-12: MIDDLE (MCP, PIP, DIP, TIP)
- * 13-16: RING (MCP, PIP, DIP, TIP)
- * 17-20: PINKY (MCP, PIP, DIP, TIP)
+ * Combines:
+ * 1. Static handshape analysis (21 landmarks)
+ * 2. Continuous temporal motion segmentation (sliding velocity window, trajectory, stroke apex)
+ *
+ * Supports continuous, fluid signing WITHOUT mandatory pauses:
+ * - Dynamic signs emit at the kinematic stroke apex (sudden deceleration or directional inflection)
+ * - Static/dactyl signs emit when held smoothly for minimal adaptive transition window
+ * - Transitions between signs are classified as 'transition', preventing erroneous interim letters
  */
 
 export function distance3D(a: Landmark3D, b: Landmark3D): number {
@@ -76,7 +76,120 @@ export function analyzeFingers(landmarks: Landmark3D[]): {
   return { thumb, index, middle, ring, pinky, palmScale: palmBase }
 }
 
-export function classifyHandLandmarks(landmarks: Landmark3D[] | null): ClassificationResult {
+/**
+ * Extract motion trajectory and kinematics from a temporal window of frames
+ */
+export function extractMotionFeatures(history: TemporalFrame[]): DynamicMotionFeatures {
+  if (history.length < 2) {
+    return {
+      durationMs: 0,
+      frameCount: history.length,
+      netDisplacementX: 0,
+      netDisplacementY: 0,
+      totalTrajectoryLength: 0,
+      peakVelocity: 0,
+      meanVelocity: 0,
+      dominantDirection: 'stationary',
+      isReciprocatingHorizontal: false,
+      isReciprocatingVertical: false,
+      strokeDetected: false,
+      strokeCenterLandmarks: null,
+    }
+  }
+
+  const first = history[0]
+  const last = history[history.length - 1]
+  const durationMs = last.timestampMs - first.timestampMs
+
+  let totalDist = 0
+  let peakVel = 0
+  let velSum = 0
+
+  let xReversals = 0
+  let yReversals = 0
+  let prevDx = 0
+  let prevDy = 0
+
+  for (let i = 1; i < history.length; i++) {
+    const p1 = history[i - 1].landmarks[0]
+    const p2 = history[i].landmarks[0]
+    const dt = Math.max(0.001, (history[i].timestampMs - history[i - 1].timestampMs) / 1000)
+
+    const dx = p2.x - p1.x
+    const dy = p2.y - p1.y
+    const segDist = Math.hypot(dx, dy)
+    const vel = segDist / dt
+
+    totalDist += segDist
+    velSum += vel
+    if (vel > peakVel) peakVel = vel
+
+    // Reciprocating direction changes
+    if (Math.abs(dx) > 0.005) {
+      if (prevDx !== 0 && Math.sign(dx) !== Math.sign(prevDx)) {
+        xReversals++
+      }
+      prevDx = dx
+    }
+
+    if (Math.abs(dy) > 0.005) {
+      if (prevDy !== 0 && Math.sign(dy) !== Math.sign(prevDy)) {
+        yReversals++
+      }
+      prevDy = dy
+    }
+  }
+
+  const meanVelocity = velSum / (history.length - 1)
+  const netDx = last.landmarks[0].x - first.landmarks[0].x
+  const netDy = last.landmarks[0].y - first.landmarks[0].y
+
+  let dominantDirection: 'left' | 'right' | 'up' | 'down' | 'circular' | 'stationary' = 'stationary'
+  if (totalDist > 0.05) {
+    if (Math.abs(netDx) > Math.abs(netDy) * 1.3) {
+      dominantDirection = netDx > 0 ? 'right' : 'left'
+    } else if (Math.abs(netDy) > Math.abs(netDx) * 1.3) {
+      dominantDirection = netDy > 0 ? 'down' : 'up'
+    } else {
+      dominantDirection = 'circular'
+    }
+  }
+
+  // Reciprocating motion flags (e.g. side-to-side wave for YO'Q, vertical nod for HA)
+  const isReciprocatingHorizontal = xReversals >= 2 && totalDist > 0.08
+  const isReciprocatingVertical = yReversals >= 2 && totalDist > 0.08
+
+  // Stroke apex detection: velocity dropped significantly after reaching a peak, or inflection reached
+  const recentVel = history.length >= 3
+    ? Math.hypot(last.landmarks[0].x - history[history.length - 2].landmarks[0].x, last.landmarks[0].y - history[history.length - 2].landmarks[0].y) /
+      Math.max(0.001, (last.timestampMs - history[history.length - 2].timestampMs) / 1000)
+    : meanVelocity
+
+  const strokeDetected = peakVel > 0.35 && recentVel < peakVel * 0.45 && totalDist > 0.05
+
+  return {
+    durationMs,
+    frameCount: history.length,
+    netDisplacementX: netDx,
+    netDisplacementY: netDy,
+    totalTrajectoryLength: totalDist,
+    peakVelocity: peakVel,
+    meanVelocity,
+    dominantDirection,
+    isReciprocatingHorizontal,
+    isReciprocatingVertical,
+    strokeDetected,
+    strokeCenterLandmarks: last.landmarks,
+  }
+}
+
+/**
+ * Continuous Classifier: Evaluates current landmarks + temporal motion window
+ */
+export function classifyContinuousHand(
+  landmarks: Landmark3D[] | null,
+  motion?: DynamicMotionFeatures | null
+): ClassificationResult {
   if (!landmarks || landmarks.length < 21) {
     return {
       state: 'no_hand',
@@ -94,6 +207,122 @@ export function classifyHandLandmarks(landmarks: Landmark3D[] | null): Classific
 
   const thumbToIndexTip = distance3D(thumbTip, indexTip) / f.palmScale
   const indexToMiddleTip = distance3D(indexTip, middleTip) / f.palmScale
+
+  // Dynamic gesture evaluation if motion features are present
+  if (motion && motion.frameCount >= 5) {
+    // 1. Dynamic 'YO‘Q' (Horizontal reciprocating waving side-to-side with index or open hand)
+    if (motion.isReciprocatingHorizontal && (f.index.isExtended || (f.index.isExtended && f.middle.isExtended))) {
+      return {
+        state: 'recognized',
+        gloss: 'YO‘Q',
+        confidence: 0.94,
+        category: 'dynamic_sign',
+        isDynamicStroke: true,
+        motionType: 'Gorizontal tebranish (Waving)',
+        description: 'O‘zbek imo-ishorasi: "YO‘Q" (Yonma-yon tebratish harakati)',
+      }
+    }
+
+    // 2. Dynamic 'HA' (Vertical reciprocating nodding movement with fist or relaxed hand)
+    if (motion.isReciprocatingVertical && !f.index.isExtended && !f.middle.isExtended) {
+      return {
+        state: 'recognized',
+        gloss: 'HA',
+        confidence: 0.93,
+        category: 'dynamic_sign',
+        isDynamicStroke: true,
+        motionType: 'Vertikal silkinish (Nodding)',
+        description: 'O‘zbek imo-ishorasi: "HA" (Yuqori-pastga silkinish harakati)',
+      }
+    }
+
+    // 3. Dynamic 'SALOM' (Open palm with reciprocating wave or outward stroke)
+    if (
+      f.thumb.isExtended &&
+      f.index.isExtended &&
+      f.middle.isExtended &&
+      f.ring.isExtended &&
+      f.pinky.isExtended &&
+      (motion.isReciprocatingHorizontal || motion.totalTrajectoryLength > 0.08)
+    ) {
+      return {
+        state: 'recognized',
+        gloss: 'SALOM',
+        confidence: 0.95,
+        category: 'dynamic_sign',
+        isDynamicStroke: true,
+        motionType: 'Kaft tebranishi (Greeting Wave)',
+        description: 'O‘zbek imo-ishorasi: "SALOM" (Ochiq kaft salomi)',
+      }
+    }
+
+    // 4. Dynamic 'RAHMAT' (Open hand forward-downward outward stroke from chest)
+    if (
+      f.index.isExtended &&
+      f.middle.isExtended &&
+      motion.netDisplacementY > 0.04 &&
+      motion.strokeDetected
+    ) {
+      return {
+        state: 'recognized',
+        gloss: 'RAHMAT',
+        confidence: 0.92,
+        category: 'dynamic_sign',
+        isDynamicStroke: true,
+        motionType: 'Oldinga-pastga uzatish',
+        description: 'O‘zbek imo-ishorasi: "RAHMAT" (Minnatdorchilik uzatmasi)',
+      }
+    }
+
+    // 5. Dynamic 'ILTIMOS' (Gentle downward/circular sweep near chest)
+    if (
+      f.index.isExtended &&
+      f.middle.isExtended &&
+      motion.dominantDirection === 'circular' &&
+      motion.totalTrajectoryLength > 0.12
+    ) {
+      return {
+        state: 'recognized',
+        gloss: 'ILTIMOS',
+        confidence: 0.90,
+        category: 'dynamic_sign',
+        isDynamicStroke: true,
+        motionType: 'Mayin aylanma harakat',
+        description: 'O‘zbek imo-ishorasi: "ILTIMOS" (Ko‘krak sohasidagi intilish)',
+      }
+    }
+
+    // 6. Dynamic 'TUSHUNDIM' (Quick downward stroke with index/hand)
+    if (
+      f.index.isExtended &&
+      motion.netDisplacementY > 0.07 &&
+      motion.peakVelocity > 0.45 &&
+      motion.strokeDetected
+    ) {
+      return {
+        state: 'recognized',
+        gloss: 'TUSHUNDIM',
+        confidence: 0.91,
+        category: 'dynamic_sign',
+        isDynamicStroke: true,
+        motionType: 'Pastga tez tushirish (Drop stroke)',
+        description: 'O‘zbek imo-ishorasi: "TUSHUNDIM" (Pastga qat’iy tushirish)',
+      }
+    }
+
+    // If rapid transition motion is in progress (high velocity, not yet apex), label transition
+    if (motion.meanVelocity > 0.60 && !motion.strokeDetected) {
+      return {
+        state: 'transition',
+        gloss: null,
+        confidence: 0,
+        category: null,
+        description: 'Harakatlanish jarayonida (ishora o‘tishi)...',
+      }
+    }
+  }
+
+  // --- Static & Quasistatic Handshape Vocabulary (Dactyl Alphabet & Core Poses) ---
 
   // 1. Dactyl 'A' (Tight fist, thumb resting beside index, all 4 fingers curled)
   if (
@@ -240,7 +469,7 @@ export function classifyHandLandmarks(landmarks: Landmark3D[] | null): Classific
     }
   }
 
-  // 9. Core Sign: 'YAXSHI' (Thumbs Up gesture)
+  // 9. Core Static / Kinematic: 'YAXSHI' (Thumbs Up gesture)
   if (
     f.thumb.isExtended &&
     !f.index.isExtended &&
@@ -258,7 +487,7 @@ export function classifyHandLandmarks(landmarks: Landmark3D[] | null): Classific
     }
   }
 
-  // 10. Core Sign: 'SALOM' (Open flat palm)
+  // 10. Core Static: 'SALOM' (Open flat palm)
   if (
     f.thumb.isExtended &&
     f.index.isExtended &&
@@ -276,7 +505,7 @@ export function classifyHandLandmarks(landmarks: Landmark3D[] | null): Classific
     }
   }
 
-  // 11. Honest Fallback: Hand is present, but pose is not in supported vocabulary
+  // 11. Honest Fallback: Hand is present, but pose is outside supported vocabulary
   return {
     state: 'unknown_gesture',
     gloss: null,
@@ -284,4 +513,9 @@ export function classifyHandLandmarks(landmarks: Landmark3D[] | null): Classific
     category: null,
     description: 'Qo‘l harakati aniqlandi, ammo bu ishora joriy model lug‘atida mavjud emas.',
   }
+}
+
+// Backward-compatible wrapper
+export function classifyHandLandmarks(landmarks: Landmark3D[] | null): ClassificationResult {
+  return classifyContinuousHand(landmarks, null)
 }

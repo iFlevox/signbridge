@@ -1,44 +1,59 @@
 import { describe, expect, it } from 'vitest'
-import { SignSequenceBuffer } from './text-buffer'
+import { ContinuousSignDecoder } from './text-buffer'
 
-describe('SignSequenceBuffer Integration', () => {
-  it('does not commit signs on transient jitter (less than stable threshold)', () => {
-    const buffer = new SignSequenceBuffer({ stableFramesThreshold: 5, cooldownMs: 500 })
+describe('ContinuousSignDecoder & Natural Signing Suite', () => {
+  it('does NOT require long artificial pause for static dactyl letters', () => {
+    const decoder = new ContinuousSignDecoder({ staticDebounceFrames: 3, duplicateSignCooldownMs: 300 })
     
-    // Only 3 frames of 'A'
+    // In continuous signing, 3 rapid frames (~90ms) is enough
+    let res
     for (let i = 0; i < 3; i++) {
-      const res = buffer.processFrame('recognized', 'A', 'dactyl_letter', 1000 + i * 50)
-      expect(res.committed).toBe(false)
+      res = decoder.processContinuousFrame('recognized', 'A', 'dactyl_letter', false, 1000 + i * 30)
     }
-    expect(buffer.getText()).toBe('')
+    expect(res?.committed).toBe(true)
+    expect(decoder.getText()).toBe('A')
   })
 
-  it('commits a sign when held stable across the threshold', () => {
-    const buffer = new SignSequenceBuffer({ stableFramesThreshold: 5, cooldownMs: 500 })
-    
-    let lastRes
-    for (let i = 0; i < 5; i++) {
-      lastRes = buffer.processFrame('recognized', 'A', 'dactyl_letter', 1000 + i * 50)
-    }
-    expect(lastRes?.committed).toBe(true)
-    expect(buffer.getText()).toBe('A')
+  it('emits dynamic sign immediately at stroke peak with zero pause required', () => {
+    const decoder = new ContinuousSignDecoder({ dynamicApexCooldownMs: 500 })
+
+    // Single stroke apex trigger
+    const res = decoder.processContinuousFrame('recognized', 'SALOM', 'dynamic_sign', true, 1000)
+    expect(res.committed).toBe(true)
+    expect(res.isDynamic).toBe(true)
+    expect(decoder.getText()).toBe('SALOM ')
   })
 
-  it('correctly builds words by spelling dactyl letters and words', () => {
-    const buffer = new SignSequenceBuffer({ stableFramesThreshold: 3, cooldownMs: 200 })
+  it('correctly forms continuous words without stopping between letters', () => {
+    const decoder = new ContinuousSignDecoder({ staticDebounceFrames: 2, duplicateSignCooldownMs: 200 })
+
+    // Continuous fluent spelling of "VALI"
+    // V
+    for (let i = 0; i < 2; i++) decoder.processContinuousFrame('recognized', 'V', 'dactyl_letter', false, 100 + i * 30)
+    expect(decoder.getText()).toBe('V')
+
+    // Transition between signs (should be ignored gracefully)
+    decoder.processContinuousFrame('transition', null, null, false, 200)
+
+    // A
+    for (let i = 0; i < 2; i++) decoder.processContinuousFrame('recognized', 'A', 'dactyl_letter', false, 300 + i * 30)
+    expect(decoder.getText()).toBe('VA')
+
+    // L
+    for (let i = 0; i < 2; i++) decoder.processContinuousFrame('recognized', 'L', 'dactyl_letter', false, 450 + i * 30)
+    expect(decoder.getText()).toBe('VAL')
+
+    // I
+    for (let i = 0; i < 2; i++) decoder.processContinuousFrame('recognized', 'I', 'dactyl_letter', false, 600 + i * 30)
+    expect(decoder.getText()).toBe('VALI')
+  })
+
+  it('automatically adds space between words upon natural pause', () => {
+    const decoder = new ContinuousSignDecoder({ autoSpaceTimeoutMs: 1000 })
     
-    // Spell 'V'
-    for (let i = 0; i < 3; i++) buffer.processFrame('recognized', 'V', 'dactyl_letter', 100 + i * 20)
-    expect(buffer.getText()).toBe('V')
-
-    // Spell 'A'
-    for (let i = 0; i < 3; i++) buffer.processFrame('recognized', 'A', 'dactyl_letter', 500 + i * 20)
-    expect(buffer.getText()).toBe('VA')
-
-    // Add space and backspace
-    buffer.addSpace()
-    expect(buffer.getText()).toBe('VA ')
-    buffer.backspace()
-    expect(buffer.getText()).toBe('VA')
+    decoder.processContinuousFrame('recognized', 'HA', 'dynamic_sign', true, 1000)
+    // Wait longer than autoSpaceTimeoutMs with no_hand
+    decoder.processContinuousFrame('no_hand', null, null, false, 2500)
+    expect(decoder.getText().endsWith(' ')).toBe(true)
   })
 })

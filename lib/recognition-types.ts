@@ -2,9 +2,9 @@
  * iFlevox SignBridge — Recognition Architecture Interfaces
  *
  * Strict three-layer separation:
- * Layer A: Hand & Pose Tracking (MediaPipe HandLandmarker 21 3D points)
- * Layer B: Sign & Dactyl Recognition (Feature extraction, angle analysis, classifier)
- * Layer C: Text Rendering & Gloss-to-Text Buffer
+ * Layer A: Temporal Tracking (21 3D hand landmarks + velocity/trajectory window)
+ * Layer B: Continuous Kinematic Classifier & Temporal Segmentation
+ * Layer C: Incremental Language Decoding & Buffer
  */
 
 export interface Landmark3D {
@@ -17,21 +17,49 @@ export interface HandLandmarkResult {
   landmarks: Landmark3D[]
   handedness: 'Left' | 'Right'
   score: number
+  timestampMs: number
 }
 
 export type RecognitionState =
   | 'idle'
   | 'no_hand'
   | 'analyzing'
-  | 'recognized'
-  | 'unknown_gesture'
+  | 'transition'       // During active movement between signs
+  | 'stroke_peak'      // Kinematic apex / sign stroke detected
+  | 'recognized'       // Validated sign emitted
+  | 'unknown_gesture'  // Movement or handshape outside verified vocabulary
+
+export interface TemporalFrame {
+  landmarks: Landmark3D[]
+  timestampMs: number
+  wristVelocity: number          // Speed of wrist movement in screen-units/sec
+  fingersVelocity: number        // Mean speed of fingertips
+  palmScale: number
+}
+
+export interface DynamicMotionFeatures {
+  durationMs: number
+  frameCount: number
+  netDisplacementX: number
+  netDisplacementY: number
+  totalTrajectoryLength: number
+  peakVelocity: number
+  meanVelocity: number
+  dominantDirection: 'left' | 'right' | 'up' | 'down' | 'circular' | 'stationary'
+  isReciprocatingHorizontal: boolean // e.g. waving side-to-side (YO'Q)
+  isReciprocatingVertical: boolean   // e.g. nodding down-up (HA)
+  strokeDetected: boolean            // Peak-then-deceleration phase
+  strokeCenterLandmarks: Landmark3D[] | null
+}
 
 export interface ClassificationResult {
   state: RecognitionState
   gloss: string | null
   confidence: number
-  category: 'dactyl_letter' | 'core_sign' | 'custom_prototype' | null
+  category: 'dactyl_letter' | 'dynamic_sign' | 'core_sign' | 'custom_prototype' | null
   description: string
+  motionType?: string
+  isDynamicStroke?: boolean
   alternativeGuesses?: Array<{ label: string; score: number }>
 }
 
@@ -39,9 +67,24 @@ export interface SupportedSign {
   id: string
   gloss: string
   uzbekName: string
-  category: 'dactyl_letter' | 'core_sign' | 'custom_prototype'
+  category: 'dactyl_letter' | 'dynamic_sign' | 'core_sign' | 'custom_prototype'
   description: string
   handShape: string
   movement: string
   verifiedInUZSL: boolean
+  isDynamic: boolean
+  motionPattern?: string
+}
+
+export interface RecordedSequenceSample {
+  id: string
+  label: string
+  category: 'dactyl_letter' | 'dynamic_sign' | 'core_sign'
+  recordedAt: string
+  signerConsent: boolean
+  fps: number
+  frames: Array<{
+    timestampMs: number
+    landmarks: Landmark3D[]
+  }>
 }
